@@ -63,6 +63,10 @@ func NewVlansModel(width, height int, client *api.Client) VlansModel {
 	s.Spinner = spinner.Dot
 	s.Style = SpinnerStyle
 
+	table := NewResizableTable([]int{10, 45, 15, 15}) // VLAN ID, Description, Devices, Ports
+	table.SortColumn = 0                              // Default sort by VLAN ID
+	table.SortAscending = true
+	
 	return VlansModel{
 		width:       width,
 		height:      height,
@@ -70,7 +74,7 @@ func NewVlansModel(width, height int, client *api.Client) VlansModel {
 		loading:     true,
 		spinner:     s,
 		searchInput: ti,
-		table:       NewResizableTable([]int{10, 28, 24, 16, 18}), // VLAN, Name, Device, Device IP, Last Updated
+		table:       table,
 	}
 }
 
@@ -114,6 +118,22 @@ func (m VlansModel) Update(msg tea.Msg) (VlansModel, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.MouseMsg:
+		// Check for header click (sorting)
+		// Allow clicks within 2 rows of HeaderY to count as header clicks
+		if col := m.table.HandleHeaderClick(msg, 0, 2); col >= 0 {
+			// Clicked on column header
+			if m.table.SortColumn == col {
+				// Toggle sort direction
+				m.table.SortAscending = !m.table.SortAscending
+			} else {
+				// New column, default to ascending
+				m.table.SortColumn = col
+				m.table.SortAscending = true
+			}
+			m.applyFilter()
+			return m, tea.Batch(cmds...)
+		}
+		
 		m.table.HandleMouse(msg, 0)
 		return m, tea.Batch(cmds...)
 
@@ -204,13 +224,70 @@ func (m *VlansModel) applyFilter() {
 		m.filtered = []map[string]interface{}{}
 	}
 
+	// Apply sorting
+	m.sortVlans()
+
 	if m.cursor >= len(m.filtered) {
 		m.cursor = 0
 		m.scrollOffset = 0
 	}
 }
 
-func (m VlansModel) View() string {
+func (m *VlansModel) sortVlans() {
+	if len(m.filtered) == 0 {
+		return
+	}
+
+	// Use a simple bubble sort with comparison function
+	for i := 0; i < len(m.filtered)-1; i++ {
+		for j := i + 1; j < len(m.filtered); j++ {
+			swap := false
+			v1 := m.filtered[i]
+			v2 := m.filtered[j]
+
+			switch m.table.SortColumn {
+			case 0: // VLAN ID (numeric)
+				val1, _ := v1["vlan"].(float64)
+				val2, _ := v2["vlan"].(float64)
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // Description (string)
+				val1 := strings.ToLower(getStringField(v1, "description"))
+				val2 := strings.ToLower(getStringField(v2, "description"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // Devices (numeric)
+				val1, _ := v1["dcount"].(float64)
+				val2, _ := v2["dcount"].(float64)
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 3: // Ports (numeric)
+				val1, _ := v1["pcount"].(float64)
+				val2, _ := v2["pcount"].(float64)
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.filtered[i], m.filtered[j] = m.filtered[j], m.filtered[i]
+			}
+		}
+	}
+}
+
+func (m *VlansModel) View() string {
 	// Ensure filtered is initialized
 	if m.filtered == nil {
 		m.filtered = []map[string]interface{}{}
@@ -250,6 +327,13 @@ func (m VlansModel) View() string {
 			WarningStyle.Render(msg))
 	}
 
+	// Calculate HeaderY for click detection
+	// Root UI layout: header bar (1 line) + tab bar (3 lines) = 4 lines
+	// VLANs content: title (1) + blank + searchBar (1-2) + blank = ~3-4 lines
+	// Table header is typically at Y=7 or Y=8
+	// Use a fixed position that works reliably
+	m.table.HeaderY = 7
+	
 	table := m.renderVlansTable()
 	
 	// Ensure we have valid dimensions for footer
@@ -259,14 +343,15 @@ func (m VlansModel) View() string {
 	}
 	
 	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
-		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  / search  ·  r refresh",
+		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  click header to sort  ·  / search  ·  r refresh",
 			m.scrollOffset+1, visibleEnd, len(m.filtered)))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, table, "", footer)
 }
 
-func (m VlansModel) renderVlansTable() string {
-	headers := []string{"VLAN", "Name", "Device", "Device IP", "Last Updated"}
+func (m *VlansModel) renderVlansTable() string {
+	headers := []string{"VLAN ID", "Description", "Devices", "Ports"}
+	
 	headerRow := m.table.RenderHeader(headers)
 	sep := m.table.RenderSeparator()
 
@@ -281,19 +366,44 @@ func (m VlansModel) renderVlansTable() string {
 
 	for i := m.scrollOffset; i < end; i++ {
 		v := m.filtered[i]
-		device := orNA(shortName(getNestedString(v, "device", "name")))
-		if device == "N/A" {
-			device = orNA(getStringField(v, "ip"))
+		
+		// Get VLAN ID (could be string or int)
+		vlanID := getStringField(v, "vlan")
+		if vlanID == "" {
+			if vlanNum, ok := v["vlan"].(float64); ok {
+				vlanID = fmt.Sprintf("%.0f", vlanNum)
+			}
+		}
+		
+		// Get description
+		description := getStringField(v, "description")
+		if description == "" {
+			description = "(no description)"
+		}
+		
+		// Get device count
+		dcount := "0"
+		if dc, ok := v["dcount"].(float64); ok {
+			dcount = fmt.Sprintf("%.0f", dc)
+		} else {
+			dcount = getStringField(v, "dcount")
+		}
+		
+		// Get port count
+		pcount := "0"
+		if pc, ok := v["pcount"].(float64); ok {
+			pcount = fmt.Sprintf("%.0f", pc)
+		} else {
+			pcount = getStringField(v, "pcount")
 		}
 
 		values := []string{
-			orNA(getStringField(v, "vlan")),
-			orNA(getStringField(v, "description")),
-			device,
-			orNA(getStringField(v, "ip")),
-			formatTime(getStringField(v, "last_discover")),
+			orNA(vlanID),
+			description,
+			dcount,
+			pcount,
 		}
-		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted}
+		colors := []lipgloss.Color{ColorPrimary, ColorText, ColorSecondary, ColorTextMuted}
 
 		row := m.table.RenderRow(values, colors)
 		if i == m.cursor {

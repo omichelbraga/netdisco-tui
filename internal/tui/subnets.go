@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -70,14 +71,22 @@ func NewSubnetsModel(width, height int, client *api.Client) SubnetsModel {
 	s.Spinner = spinner.Dot
 	s.Style = SpinnerStyle
 
+	table := NewResizableTable([]int{20, 26, 8, 8, 8, 10}) // Subnet, Description, Total, Used, Free, Util %
+	table.SortColumn = 0                                   // Default sort by Subnet
+	table.SortAscending = true
+
+	ipTable := NewResizableTable([]int{16, 20, 24, 18, 18, 18}) // IP, MAC, DNS, Vendor, First Seen, Last Seen
+	ipTable.SortColumn = 0                                       // Default sort by IP
+	ipTable.SortAscending = true
+
 	return SubnetsModel{
 		width:       width,
 		height:      height,
 		client:      client,
 		searchInput: ti,
 		spinner:     s,
-		table:       NewResizableTable([]int{20, 26, 8, 8, 8, 10}),    // Subnet, Description, Total, Used, Free, Util %
-		ipTable:     NewResizableTable([]int{16, 20, 24, 18, 18, 18}), // IP, MAC, DNS, Vendor, First Seen, Last Seen
+		table:       table,
+		ipTable:     ipTable,
 	}
 }
 
@@ -105,8 +114,30 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 
 	case tea.MouseMsg:
 		if m.inIPInventory {
+			// Check for IP table header click
+			if col := m.ipTable.HandleHeaderClick(msg, 0, 2); col >= 0 {
+				if m.ipTable.SortColumn == col {
+					m.ipTable.SortAscending = !m.ipTable.SortAscending
+				} else {
+					m.ipTable.SortColumn = col
+					m.ipTable.SortAscending = true
+				}
+				m.sortIPInventory()
+				return m, nil
+			}
 			m.ipTable.HandleMouse(msg, 0)
 		} else {
+			// Check for subnet table header click
+			if col := m.table.HandleHeaderClick(msg, 0, 2); col >= 0 {
+				if m.table.SortColumn == col {
+					m.table.SortAscending = !m.table.SortAscending
+				} else {
+					m.table.SortColumn = col
+					m.table.SortAscending = true
+				}
+				m.sortSubnets()
+				return m, nil
+			}
 			m.table.HandleMouse(msg, 0)
 		}
 		return m, nil
@@ -239,7 +270,145 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m SubnetsModel) View() string {
+func (m *SubnetsModel) sortSubnets() {
+	if len(m.subnets) == 0 {
+		return
+	}
+
+	for i := 0; i < len(m.subnets)-1; i++ {
+		for j := i + 1; j < len(m.subnets); j++ {
+			swap := false
+			s1 := m.subnets[i]
+			s2 := m.subnets[j]
+
+			switch m.table.SortColumn {
+			case 0: // Subnet
+				val1 := strings.ToLower(getStringField(s1, "subnet"))
+				val2 := strings.ToLower(getStringField(s2, "subnet"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // Description
+				val1 := strings.ToLower(getStringField(s1, "description"))
+				val2 := strings.ToLower(getStringField(s2, "description"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // Total
+				val1, _ := s1["total"].(float64)
+				val2, _ := s2["total"].(float64)
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 3: // Used
+				val1, _ := s1["used"].(float64)
+				val2, _ := s2["used"].(float64)
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 4: // Free
+				val1, _ := s1["free"].(float64)
+				val2, _ := s2["free"].(float64)
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 5: // Util %
+				val1, _ := s1["utilization"].(float64)
+				val2, _ := s2["utilization"].(float64)
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.subnets[i], m.subnets[j] = m.subnets[j], m.subnets[i]
+			}
+		}
+	}
+}
+
+func (m *SubnetsModel) sortIPInventory() {
+	if len(m.ipInventory) == 0 {
+		return
+	}
+
+	for i := 0; i < len(m.ipInventory)-1; i++ {
+		for j := i + 1; j < len(m.ipInventory); j++ {
+			swap := false
+			ip1 := m.ipInventory[i]
+			ip2 := m.ipInventory[j]
+
+			switch m.ipTable.SortColumn {
+			case 0: // IP
+				val1 := strings.ToLower(getStringField(ip1, "ip"))
+				val2 := strings.ToLower(getStringField(ip2, "ip"))
+				if m.ipTable.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // MAC
+				val1 := strings.ToLower(getStringField(ip1, "mac"))
+				val2 := strings.ToLower(getStringField(ip2, "mac"))
+				if m.ipTable.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // DNS
+				val1 := strings.ToLower(getStringField(ip1, "dns"))
+				val2 := strings.ToLower(getStringField(ip2, "dns"))
+				if m.ipTable.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 3: // Vendor
+				val1 := strings.ToLower(getStringField(ip1, "vendor"))
+				val2 := strings.ToLower(getStringField(ip2, "vendor"))
+				if m.ipTable.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 4: // First Seen
+				val1 := strings.ToLower(getStringField(ip1, "time_first"))
+				val2 := strings.ToLower(getStringField(ip2, "time_first"))
+				if m.ipTable.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 5: // Last Seen
+				val1 := strings.ToLower(getStringField(ip1, "time_last"))
+				val2 := strings.ToLower(getStringField(ip2, "time_last"))
+				if m.ipTable.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.ipInventory[i], m.ipInventory[j] = m.ipInventory[j], m.ipInventory[i]
+			}
+		}
+	}
+}
+
+func (m *SubnetsModel) View() string {
 	if m.inIPInventory {
 		return m.viewIPInventory()
 	}
@@ -267,6 +436,9 @@ func (m SubnetsModel) View() string {
 			WarningStyle.Render("No subnet data found."))
 	}
 
+	// Set HeaderY for click detection
+	m.table.HeaderY = 7
+
 	table := m.renderSubnetsTable()
 
 	maxVisible := m.height - 10
@@ -276,7 +448,7 @@ func (m SubnetsModel) View() string {
 	visibleEnd := minInt(m.scrollOffset+maxVisible, len(m.subnets))
 
 	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
-		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  Enter → IP inventory",
+		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  click header to sort  ·  Enter → IP inventory",
 			m.scrollOffset+1, visibleEnd, len(m.subnets)))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, table, "", footer)
@@ -342,7 +514,7 @@ func (m SubnetsModel) renderSubnetsTable() string {
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
-func (m SubnetsModel) viewIPInventory() string {
+func (m *SubnetsModel) viewIPInventory() string {
 	header := TitleStyle.Render("📊  IP Inventory") +
 		lipgloss.NewStyle().Foreground(ColorTextMuted).Render(fmt.Sprintf("  [%s]", m.selectedSubnet)) +
 		lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  ← Esc/b")
@@ -359,6 +531,9 @@ func (m SubnetsModel) viewIPInventory() string {
 		return lipgloss.JoinVertical(lipgloss.Left, header, "",
 			WarningStyle.Render("No IPs found in this subnet."))
 	}
+
+	// Set HeaderY for click detection
+	m.ipTable.HeaderY = 6
 
 	headers := []string{"IP", "MAC", "DNS", "Vendor", "First Seen", "Last Seen"}
 	headerRow := m.ipTable.RenderHeader(headers)
@@ -394,7 +569,7 @@ func (m SubnetsModel) viewIPInventory() string {
 	}
 
 	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
-		fmt.Sprintf("  %d IPs  ·  ↑↓ navigate", len(m.ipInventory)))
+		fmt.Sprintf("  %d IPs  ·  ↑↓ navigate  ·  click header to sort", len(m.ipInventory)))
 	rows = append(rows, "", footer)
 
 	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header, ""}, rows...)...)

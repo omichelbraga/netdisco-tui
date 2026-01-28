@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -78,6 +79,22 @@ func NewReportsModel(width, height int, client *api.Client) ReportsModel {
 	s.Spinner = spinner.Dot
 	s.Style = SpinnerStyle
 
+	tableRecent := NewResizableTable([]int{24, 16, 14, 16, 18, 18}) // Name, IP, Vendor, Model, Location, Discovered
+	tableRecent.SortColumn = 5                                       // Default sort by Discovered
+	tableRecent.SortAscending = false                                // Newest first
+
+	tableAllDevices := NewResizableTable([]int{22, 15, 14, 24, 18}) // Name, IP, Vendor, Model, Location
+	tableAllDevices.SortColumn = 0                                   // Default sort by Name
+	tableAllDevices.SortAscending = true
+
+	tableVendor := NewResizableTable([]int{30, 10, 12}) // Vendor, Count, Percentage
+	tableVendor.SortColumn = 1                           // Default sort by Count
+	tableVendor.SortAscending = false                    // Highest first
+
+	tableVLANs := NewResizableTable([]int{8, 24, 40}) // VLAN, Name, Description
+	tableVLANs.SortColumn = 0                          // Default sort by VLAN ID
+	tableVLANs.SortAscending = true
+
 	return ReportsModel{
 		width:           width,
 		height:          height,
@@ -86,10 +103,10 @@ func NewReportsModel(width, height int, client *api.Client) ReportsModel {
 		spinner:         s,
 		days:            7,
 		reportType:      ReportAllDevices,
-		tableRecent:     NewResizableTable([]int{24, 16, 14, 16, 18, 18}), // Name, IP, Vendor, Model, Location, Discovered
-		tableAllDevices: NewResizableTable([]int{22, 15, 14, 24, 18}),     // Name, IP, Vendor, Model, Location
-		tableVendor:     NewResizableTable([]int{30, 10, 12}),             // Vendor, Count, Percentage
-		tableVLANs:      NewResizableTable([]int{8, 24, 40}),              // VLAN, Name, Description
+		tableRecent:     tableRecent,
+		tableAllDevices: tableAllDevices,
+		tableVendor:     tableVendor,
+		tableVLANs:      tableVLANs,
 	}
 }
 
@@ -97,7 +114,7 @@ func (m ReportsModel) Init() tea.Cmd {
 	return loadDeviceInventoryCmd(m.client)
 }
 
-func (m ReportsModel) Update(msg tea.Msg) (ReportsModel, tea.Cmd) {
+func (m *ReportsModel) Update(msg tea.Msg) (*ReportsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case recentDevicesMsg:
 		m.loading = false
@@ -126,18 +143,52 @@ func (m ReportsModel) Update(msg tea.Msg) (ReportsModel, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		// Handle clicks on report sub-menu tabs
-		// Reports sub-tabs appear in the content area after main tabs
-		// Use Y range 4-10 to catch clicks on the sub-tab bar
-		if msg.Type == tea.MouseLeft && (msg.Y >= 4 && msg.Y <= 10) {
-			// Use fixed position thresholds for reliable detection
-			// Report tabs are left-aligned starting around X=2
+		// Calculate actual Y position of sub-tabs and table header dynamically
+		// Build the sub-tab bar to measure its height
+		tabEmojis := []string{"⏱", "📊", "📦", "🌐"}
+		reportLabels := []string{"Recent", "All Devices", "By Vendor", "VLANs"}
+		var tabBar []string
+		for i, label := range reportLabels {
+			labelWithEmoji := tabEmojis[i] + "  " + label
+			if i == m.reportType {
+				tabBar = append(tabBar, TabActiveStyle.Render(labelWithEmoji))
+			} else {
+				tabBar = append(tabBar, TabInactiveStyle.Render(labelWithEmoji))
+			}
+		}
+		tabs := lipgloss.NewStyle().
+			Padding(1, 2).
+			Render(lipgloss.JoinHorizontal(lipgloss.Top, tabBar...))
+		
+		// Calculate Y positions:
+		// Root UI: 4 lines (header bar + tab bar)
+		// tabs: measured height
+		// blank line after tabs: 1
+		// header (title) line: 1
+		// controls line: 1
+		// blank line before table: 2 (seems to be 2 lines in actual rendering)
+		rootUIHeight := 4
+		tabsHeight := lipgloss.Height(tabs)
+		blankLineAfterTabs := 1
+		headerLine := 1
+		controlsLine := 1
+		blankLineBeforeTable := 2  // Increased from 1 to 2
+		
+		// Sub-tabs Y range
+		subTabStartY := rootUIHeight
+		subTabEndY := rootUIHeight + tabsHeight - 1
+		
+		// Table header Y (add all components above it)
+		tableHeaderY := rootUIHeight + tabsHeight + blankLineAfterTabs + headerLine + controlsLine + blankLineBeforeTable
+		
+		// Check for sub-tab clicks FIRST
+		if msg.Type == tea.MouseLeft && (msg.Y >= subTabStartY && msg.Y <= subTabEndY) {
 			x := msg.X
 			
 			var newReportType int
 			var shouldSwitch bool
 			
-			// Simple threshold-based detection
+			// Detect which sub-tab was clicked
 			if x >= 0 && x < 18 {
 				newReportType = ReportRecent
 				shouldSwitch = true
@@ -158,10 +209,66 @@ func (m ReportsModel) Update(msg tea.Msg) (ReportsModel, tea.Cmd) {
 				m.loading = true
 				return m, m.loadCurrentReport()
 			}
+			// Return without sorting if we clicked on sub-tabs
 			return m, nil
 		}
-
-		// Handle table column resizing if not clicking tabs
+		
+		// Set HeaderY for all tables based on calculated position
+		m.tableRecent.HeaderY = tableHeaderY
+		m.tableAllDevices.HeaderY = tableHeaderY
+		m.tableVendor.HeaderY = tableHeaderY
+		m.tableVLANs.HeaderY = tableHeaderY
+		
+		// Check for header click (sorting)
+		// Use rowOffset=2 for some tolerance
+		switch m.reportType {
+		case ReportRecent:
+			if col := m.tableRecent.HandleHeaderClick(msg, 0, 2); col >= 0 {
+				if m.tableRecent.SortColumn == col {
+					m.tableRecent.SortAscending = !m.tableRecent.SortAscending
+				} else {
+					m.tableRecent.SortColumn = col
+					m.tableRecent.SortAscending = true
+				}
+				m.sortRecentDevices()
+				return m, nil
+			}
+		case ReportAllDevices:
+			if col := m.tableAllDevices.HandleHeaderClick(msg, 0, 2); col >= 0 {
+				if m.tableAllDevices.SortColumn == col {
+					m.tableAllDevices.SortAscending = !m.tableAllDevices.SortAscending
+				} else {
+					m.tableAllDevices.SortColumn = col
+					m.tableAllDevices.SortAscending = true
+				}
+				m.sortAllDevices()
+				return m, nil
+			}
+		case ReportByVendor:
+			if col := m.tableVendor.HandleHeaderClick(msg, 0, 2); col >= 0 {
+				if m.tableVendor.SortColumn == col {
+					m.tableVendor.SortAscending = !m.tableVendor.SortAscending
+				} else {
+					m.tableVendor.SortColumn = col
+					m.tableVendor.SortAscending = true
+				}
+				m.sortVendorStats()
+				return m, nil
+			}
+		case ReportVLANs:
+			if col := m.tableVLANs.HandleHeaderClick(msg, 0, 2); col >= 0 {
+				if m.tableVLANs.SortColumn == col {
+					m.tableVLANs.SortAscending = !m.tableVLANs.SortAscending
+				} else {
+					m.tableVLANs.SortColumn = col
+					m.tableVLANs.SortAscending = true
+				}
+				m.sortVLANs()
+				return m, nil
+			}
+		}
+		
+		// Handle table column resizing
 		switch m.reportType {
 		case ReportRecent:
 			m.tableRecent.HandleMouse(msg, 0)
@@ -277,7 +384,240 @@ func (m ReportsModel) buildVendorStats() []map[string]interface{} {
 	return stats
 }
 
-func (m ReportsModel) View() string {
+func (m *ReportsModel) sortRecentDevices() {
+	if len(m.devices) == 0 {
+		return
+	}
+
+	for i := 0; i < len(m.devices)-1; i++ {
+		for j := i + 1; j < len(m.devices); j++ {
+			swap := false
+			d1 := m.devices[i]
+			d2 := m.devices[j]
+
+			switch m.tableRecent.SortColumn {
+			case 0: // Name
+				val1 := strings.ToLower(getStringField(d1, "device_name"))
+				val2 := strings.ToLower(getStringField(d2, "device_name"))
+				if m.tableRecent.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // IP
+				val1 := strings.ToLower(getStringField(d1, "ip"))
+				val2 := strings.ToLower(getStringField(d2, "ip"))
+				if m.tableRecent.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // Vendor
+				val1 := strings.ToLower(getStringField(d1, "vendor"))
+				val2 := strings.ToLower(getStringField(d2, "vendor"))
+				if m.tableRecent.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 3: // Model
+				val1 := strings.ToLower(getStringField(d1, "model"))
+				val2 := strings.ToLower(getStringField(d2, "model"))
+				if m.tableRecent.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 4: // Location
+				val1 := strings.ToLower(getStringField(d1, "location"))
+				val2 := strings.ToLower(getStringField(d2, "location"))
+				if m.tableRecent.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 5: // Discovered
+				val1 := strings.ToLower(getStringField(d1, "creation"))
+				val2 := strings.ToLower(getStringField(d2, "creation"))
+				if m.tableRecent.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.devices[i], m.devices[j] = m.devices[j], m.devices[i]
+			}
+		}
+	}
+}
+
+func (m *ReportsModel) sortAllDevices() {
+	if len(m.devices) == 0 {
+		return
+	}
+
+	for i := 0; i < len(m.devices)-1; i++ {
+		for j := i + 1; j < len(m.devices); j++ {
+			swap := false
+			d1 := m.devices[i]
+			d2 := m.devices[j]
+
+			switch m.tableAllDevices.SortColumn {
+			case 0: // Name
+				val1 := strings.ToLower(getStringField(d1, "device_name"))
+				val2 := strings.ToLower(getStringField(d2, "device_name"))
+				if m.tableAllDevices.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // IP
+				val1 := strings.ToLower(getStringField(d1, "ip"))
+				val2 := strings.ToLower(getStringField(d2, "ip"))
+				if m.tableAllDevices.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // Vendor
+				val1 := strings.ToLower(getStringField(d1, "vendor"))
+				val2 := strings.ToLower(getStringField(d2, "vendor"))
+				if m.tableAllDevices.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 3: // Model
+				val1 := strings.ToLower(getStringField(d1, "model"))
+				val2 := strings.ToLower(getStringField(d2, "model"))
+				if m.tableAllDevices.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 4: // Location
+				val1 := strings.ToLower(getStringField(d1, "location"))
+				val2 := strings.ToLower(getStringField(d2, "location"))
+				if m.tableAllDevices.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.devices[i], m.devices[j] = m.devices[j], m.devices[i]
+			}
+		}
+	}
+}
+
+func (m *ReportsModel) sortVendorStats() {
+	if len(m.vendorStats) == 0 {
+		return
+	}
+
+	totalDevices := len(m.devices)
+	if totalDevices == 0 {
+		totalDevices = 1 // Avoid division by zero
+	}
+
+	for i := 0; i < len(m.vendorStats)-1; i++ {
+		for j := i + 1; j < len(m.vendorStats); j++ {
+			swap := false
+			v1 := m.vendorStats[i]
+			v2 := m.vendorStats[j]
+
+			switch m.tableVendor.SortColumn {
+			case 0: // Vendor
+				val1 := strings.ToLower(getStringField(v1, "vendor"))
+				val2 := strings.ToLower(getStringField(v2, "vendor"))
+				if m.tableVendor.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // Count (stored as int, not float64)
+				val1, ok1 := v1["count"].(int)
+				val2, ok2 := v2["count"].(int)
+				if !ok1 || !ok2 {
+					continue
+				}
+				if m.tableVendor.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // Percentage (calculated, not stored)
+				count1, ok1 := v1["count"].(int)
+				count2, ok2 := v2["count"].(int)
+				if !ok1 || !ok2 {
+					continue
+				}
+				pct1 := float64(count1) / float64(totalDevices) * 100
+				pct2 := float64(count2) / float64(totalDevices) * 100
+				if m.tableVendor.SortAscending {
+					swap = pct1 > pct2
+				} else {
+					swap = pct1 < pct2
+				}
+			}
+
+			if swap {
+				m.vendorStats[i], m.vendorStats[j] = m.vendorStats[j], m.vendorStats[i]
+			}
+		}
+	}
+}
+
+func (m *ReportsModel) sortVLANs() {
+	if len(m.vlans) == 0 {
+		return
+	}
+
+	for i := 0; i < len(m.vlans)-1; i++ {
+		for j := i + 1; j < len(m.vlans); j++ {
+			swap := false
+			v1 := m.vlans[i]
+			v2 := m.vlans[j]
+
+			switch m.tableVLANs.SortColumn {
+			case 0: // VLAN ID
+				val1, _ := v1["vlan"].(float64)
+				val2, _ := v2["vlan"].(float64)
+				if m.tableVLANs.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // Name (description)
+				val1 := strings.ToLower(getStringField(v1, "description"))
+				val2 := strings.ToLower(getStringField(v2, "description"))
+				if m.tableVLANs.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // Description (same as name - might be redundant)
+				val1 := strings.ToLower(getStringField(v1, "description"))
+				val2 := strings.ToLower(getStringField(v2, "description"))
+				if m.tableVLANs.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.vlans[i], m.vlans[j] = m.vlans[j], m.vlans[i]
+			}
+		}
+	}
+}
+
+func (m *ReportsModel) View() string {
 	// Report type tabs with emojis
 	reportData := []struct{ emoji, name string }{
 		{"🕐", "Recent"},
@@ -304,7 +644,7 @@ func (m ReportsModel) View() string {
 	case ReportRecent:
 		header = TitleStyle.Render("📋  Recently Added Devices") +
 			SubtitleStyle.Render(fmt.Sprintf(" (last %d days)", m.days))
-		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  +/- change range  ·  r refresh  ·  ←→ switch report") + "\n"
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  +/- change range  ·  click header to sort  ·  r refresh  ·  ←→ switch report") + "\n"
 
 		if m.loading {
 			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."
@@ -319,7 +659,7 @@ func (m ReportsModel) View() string {
 	case ReportAllDevices:
 		header = TitleStyle.Render("📋  All Devices") +
 			SubtitleStyle.Render(fmt.Sprintf(" (%d total)", len(m.devices)))
-		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  r refresh  ·  ←→ switch report") + "\n"
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  click header to sort  ·  r refresh  ·  ←→ switch report") + "\n"
 
 		if m.loading {
 			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."
@@ -332,7 +672,7 @@ func (m ReportsModel) View() string {
 	case ReportByVendor:
 		header = TitleStyle.Render("📋  Devices by Vendor") +
 			SubtitleStyle.Render(fmt.Sprintf(" (%d vendors)", len(m.vendorStats)))
-		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  r refresh  ·  ←→ switch report") + "\n"
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  click header to sort  ·  r refresh  ·  ←→ switch report") + "\n"
 
 		if m.loading {
 			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."
@@ -345,7 +685,7 @@ func (m ReportsModel) View() string {
 	case ReportVLANs:
 		header = TitleStyle.Render("📋  VLAN Inventory") +
 			SubtitleStyle.Render(fmt.Sprintf(" (%d VLANs)", len(m.vlans)))
-		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  r refresh  ·  ←→ switch report") + "\n"
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  click header to sort  ·  r refresh  ·  ←→ switch report") + "\n"
 
 		if m.loading {
 			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."

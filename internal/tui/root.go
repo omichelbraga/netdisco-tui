@@ -25,35 +25,64 @@ type RootModel struct {
 	activeTab     int
 	initialized   []bool
 	showThemeMenu bool
+	themeZones    []themeClickZone
+	showingSplash bool
+	splash        SplashModel
 
 	devices DevicesModel
 	nodes   NodesModel
 	vlans   VlansModel
 	subnets SubnetsModel
-	reports ReportsModel
+	reports *ReportsModel
+}
+
+type themeClickZone struct {
+	minY, maxY, minX, maxX int
+	themeIdx               int
 }
 
 func NewRootModel(width, height int, client *api.Client) RootModel {
+	// Load saved theme on startup
+	LoadTheme()
+	
+	reports := NewReportsModel(width, height-4, client)
 	return RootModel{
-		width:       width,
-		height:      height,
-		client:      client,
-		activeTab:   TabDevices,
-		initialized: make([]bool, 5),
-		devices:     NewDevicesModel(width, height-4, client),
-		nodes:       NewNodesModel(width, height-4, client),
-		vlans:       NewVlansModel(width, height-4, client),
-		subnets:     NewSubnetsModel(width, height-4, client),
-		reports:     NewReportsModel(width, height-4, client),
+		width:         width,
+		height:        height,
+		client:        client,
+		activeTab:     TabDevices,
+		initialized:   make([]bool, 5),
+		showingSplash: true,
+		splash:        NewSplashModel(width, height),
+		devices:       NewDevicesModel(width, height-4, client),
+		nodes:         NewNodesModel(width, height-4, client),
+		vlans:         NewVlansModel(width, height-4, client),
+		subnets:       NewSubnetsModel(width, height-4, client),
+		reports:       &reports,
 	}
 }
 
 func (m RootModel) Init() tea.Cmd {
+	if m.showingSplash {
+		return m.splash.Init()
+	}
 	m.initialized[TabDevices] = true
 	return m.devices.Init()
 }
 
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle splash screen
+	if m.showingSplash {
+		var cmd tea.Cmd
+		m.splash, cmd = m.splash.Update(msg)
+		if m.splash.done {
+			m.showingSplash = false
+			m.initialized[TabDevices] = true
+			return m, m.devices.Init()
+		}
+		return m, cmd
+	}
+	
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -72,9 +101,27 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		// Handle clicks on tab bar
-		// Layout: Row 0 = header bar, Row 1-4 = tab bar (with padding and borders), Row 5+ = content
-		if msg.Type == tea.MouseLeft && (msg.Y >= 1 && msg.Y <= 4) {
+		// Handle clicks on theme menu if it's open
+		if m.showThemeMenu && msg.Type == tea.MouseLeft {
+			y := msg.Y
+			x := msg.X
+			
+			// Use the calculated zones from renderThemeMenu
+			for _, zone := range m.themeZones {
+				if y >= zone.minY && y <= zone.maxY && x >= zone.minX && x <= zone.maxX {
+					themes := []Theme{CyberpunkTheme, NordTheme, DraculaTheme, TokyoNightTheme, GruvboxTheme, MonokaiTheme}
+					CurrentTheme = themes[zone.themeIdx]
+					UpdateStylesForTheme()
+					SaveTheme(CurrentTheme.Name) // Save theme selection
+					m.showThemeMenu = false
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+		
+		// Handle clicks on tab bar (only if theme menu is closed)
+		if !m.showThemeMenu && msg.Type == tea.MouseLeft && (msg.Y >= 1 && msg.Y <= 4) {
 			// Calculate actual tab positions by measuring rendered widths
 			x := msg.X
 			tabEmojis := []string{"📱", "🔍", "🌐", "📊", "📋"}
@@ -97,7 +144,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				currentX += tabWidth
 			}
 		}
-		// If not clicking on tabs, pass to active tab
+		// If not clicking on tabs or theme menu, pass to active tab
 
 	case tea.KeyMsg:
 		// Check if any input is focused before handling number keys
@@ -133,6 +180,114 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t", "T":
 			// Toggle theme menu
 			m.showThemeMenu = !m.showThemeMenu
+			if m.showThemeMenu {
+				// Pre-calculate theme zones when opening menu
+				themes := []Theme{CyberpunkTheme, NordTheme, DraculaTheme, TokyoNightTheme, GruvboxTheme, MonokaiTheme}
+				m.themeZones = []themeClickZone{}
+				
+				// Calculate actual header and tab bar heights
+				// Header bar
+				headerLeft := "⚡ NETDISCO TUI"
+				headerRight := fmt.Sprintf("Theme: %s [T]", CurrentTheme.Name)
+				header := headerLeft + strings.Repeat(" ", m.width-len(headerLeft)-len(headerRight)) + headerRight
+				headerBar := lipgloss.NewStyle().
+					Background(CurrentTheme.BackgroundAlt).
+					Foreground(CurrentTheme.Text).
+					Padding(0, 2).
+					Render(header)
+				headerHeight := lipgloss.Height(headerBar)
+				
+				// Tab bar
+				tabEmojis := []string{"📱", "🔍", "🌐", "📊", "📋"}
+				var tabs []string
+				for i, name := range tabNames {
+					label := fmt.Sprintf("%s %s", tabEmojis[i], name)
+					if i == m.activeTab {
+						tabs = append(tabs, TabActiveStyle.Render(label))
+					} else {
+						tabs = append(tabs, TabInactiveStyle.Render(label))
+					}
+				}
+				tabBar := lipgloss.NewStyle().
+					Padding(1, 2).
+					Render(lipgloss.JoinHorizontal(lipgloss.Top, tabs...))
+				tabBarHeight := lipgloss.Height(tabBar)
+				
+				// Simulate rendering to get heights
+				title := lipgloss.NewStyle().
+					Bold(true).
+					Foreground(CurrentTheme.Primary).
+					Padding(1, 0).
+					Render("🎨  SELECT THEME")
+				
+				// Start after header/tabs, then add: outer padding + title + blank line
+				currentY := headerHeight + tabBarHeight + 2 + lipgloss.Height(title) + 1
+				
+				var itemHeights []int
+				var itemWidth int
+				
+				for i, theme := range themes {
+					previewBox := lipgloss.NewStyle().
+						Width(40).
+						Height(3).
+						Background(theme.Background).
+						BorderStyle(lipgloss.RoundedBorder()).
+						BorderForeground(theme.Border).
+						Padding(0, 1).
+						Render(
+							lipgloss.JoinVertical(lipgloss.Left,
+								lipgloss.NewStyle().Foreground(theme.Primary).Render(fmt.Sprintf("■ Primary  ")+
+									lipgloss.NewStyle().Foreground(theme.Secondary).Render("■ Secondary  ")+
+									lipgloss.NewStyle().Foreground(theme.Accent).Render("■ Accent")),
+								lipgloss.NewStyle().Foreground(theme.Success).Render("● Success  ")+
+									lipgloss.NewStyle().Foreground(theme.Warning).Render("● Warning  ")+
+									lipgloss.NewStyle().Foreground(theme.Danger).Render("● Danger"),
+							),
+						)
+
+					label := fmt.Sprintf("[%d] %s", i+1, theme.Name)
+					if theme.Name == CurrentTheme.Name {
+						label += " ✓"
+						label = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Render(label)
+					} else {
+						label = lipgloss.NewStyle().Foreground(CurrentTheme.TextMuted).Render(label)
+					}
+
+					item := lipgloss.JoinVertical(lipgloss.Left, label, previewBox)
+					itemHeights = append(itemHeights, lipgloss.Height(item))
+					if i == 0 {
+						itemWidth = lipgloss.Width(item)
+					}
+				}
+				
+				// Left column zones (themes 0, 1, 2)
+				leftColX := 2
+				yPos := currentY
+				for i := 0; i < 3; i++ {
+					m.themeZones = append(m.themeZones, themeClickZone{
+						minY:     yPos,
+						maxY:     yPos + itemHeights[i] - 1,
+						minX:     leftColX,
+						maxX:     leftColX + itemWidth,
+						themeIdx: i,
+					})
+					yPos += itemHeights[i] + 1 // +1 for MarginTop
+				}
+				
+				// Right column zones (themes 3, 4, 5)
+				rightColX := leftColX + itemWidth + 2
+				yPos = currentY
+				for i := 3; i < 6; i++ {
+					m.themeZones = append(m.themeZones, themeClickZone{
+						minY:     yPos,
+						maxY:     yPos + itemHeights[i] - 1,
+						minX:     rightColX,
+						maxX:     rightColX + itemWidth,
+						themeIdx: i,
+					})
+					yPos += itemHeights[i] + 1
+				}
+			}
 			return m, nil
 		case "esc":
 			// Close theme menu if open
@@ -148,6 +303,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if idx >= 0 && idx < len(themes) {
 					CurrentTheme = themes[idx]
 					UpdateStylesForTheme()
+					SaveTheme(CurrentTheme.Name) // Save theme selection
 					m.showThemeMenu = false
 					return m, nil
 				}
@@ -215,6 +371,11 @@ func (m RootModel) switchTab(tab int) (RootModel, tea.Cmd) {
 }
 
 func (m RootModel) View() string {
+	// Show splash screen if active
+	if m.showingSplash {
+		return m.splash.View()
+	}
+	
 	// Header with app title and theme
 	headerLeft := lipgloss.NewStyle().
 		Bold(true).

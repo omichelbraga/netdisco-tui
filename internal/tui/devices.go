@@ -150,6 +150,10 @@ func NewDevicesModel(width, height int, client *api.Client) DevicesModel {
 	s.Spinner = spinner.Dot
 	s.Style = SpinnerStyle
 
+	table := NewResizableTable([]int{22, 15, 14, 24, 18}) // Name, IP, Vendor, Model, Location
+	table.SortColumn = 0                                   // Default sort by Name
+	table.SortAscending = true
+
 	return DevicesModel{
 		width:       width,
 		height:      height,
@@ -157,7 +161,7 @@ func NewDevicesModel(width, height int, client *api.Client) DevicesModel {
 		loading:     true,
 		spinner:     s,
 		searchInput: ti,
-		table:       NewResizableTable([]int{22, 15, 14, 24, 18}), // Name, IP, Vendor, Model, Location
+		table:       table,
 	}
 }
 
@@ -211,6 +215,20 @@ func (m DevicesModel) Update(msg tea.Msg) (DevicesModel, tea.Cmd) {
 
 	case tea.MouseMsg:
 		if !m.inDetail {
+			// Check for header click (sorting)
+			if col := m.table.HandleHeaderClick(msg, 0, 2); col >= 0 {
+				// Clicked on column header
+				if m.table.SortColumn == col {
+					// Toggle sort direction
+					m.table.SortAscending = !m.table.SortAscending
+				} else {
+					// New column, default to ascending
+					m.table.SortColumn = col
+					m.table.SortAscending = true
+				}
+				m.applyFilter()
+				return m, nil
+			}
 			m.table.HandleMouse(msg, 0)
 		}
 		return m, nil
@@ -366,39 +384,104 @@ func (m DevicesModel) loadCurrentTab() tea.Cmd {
 func (m *DevicesModel) applyFilter() {
 	if m.searchQuery == "" {
 		m.filtered = m.devices
-		return
-	}
-	query := strings.ToLower(m.searchQuery)
-	var filtered []map[string]interface{}
-	for _, dev := range m.devices {
-		name := strings.ToLower(getStringField(dev, "device_name"))
-		ip := strings.ToLower(getStringField(dev, "ip"))
-		vendor := strings.ToLower(getStringField(dev, "vendor"))
-		model := strings.ToLower(getStringField(dev, "model"))
-		location := strings.ToLower(getStringField(dev, "location"))
-		if strings.Contains(name, query) || strings.Contains(ip, query) ||
-			strings.Contains(vendor, query) || strings.Contains(model, query) ||
-			strings.Contains(location, query) {
-			filtered = append(filtered, dev)
+	} else {
+		query := strings.ToLower(m.searchQuery)
+		var filtered []map[string]interface{}
+		for _, dev := range m.devices {
+			name := strings.ToLower(getStringField(dev, "device_name"))
+			ip := strings.ToLower(getStringField(dev, "ip"))
+			vendor := strings.ToLower(getStringField(dev, "vendor"))
+			model := strings.ToLower(getStringField(dev, "model"))
+			location := strings.ToLower(getStringField(dev, "location"))
+			if strings.Contains(name, query) || strings.Contains(ip, query) ||
+				strings.Contains(vendor, query) || strings.Contains(model, query) ||
+				strings.Contains(location, query) {
+				filtered = append(filtered, dev)
+			}
 		}
+		m.filtered = filtered
 	}
-	m.filtered = filtered
+	
+	// Apply sorting
+	m.sortDevices()
+	
 	if m.cursor >= len(m.filtered) {
 		m.cursor = 0
 		m.scrollOffset = 0
 	}
 }
 
+func (m *DevicesModel) sortDevices() {
+	if len(m.filtered) == 0 {
+		return
+	}
+
+	for i := 0; i < len(m.filtered)-1; i++ {
+		for j := i + 1; j < len(m.filtered); j++ {
+			swap := false
+			d1 := m.filtered[i]
+			d2 := m.filtered[j]
+
+			switch m.table.SortColumn {
+			case 0: // Name
+				val1 := strings.ToLower(getStringField(d1, "device_name"))
+				val2 := strings.ToLower(getStringField(d2, "device_name"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // IP
+				val1 := strings.ToLower(getStringField(d1, "ip"))
+				val2 := strings.ToLower(getStringField(d2, "ip"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // Vendor
+				val1 := strings.ToLower(getStringField(d1, "vendor"))
+				val2 := strings.ToLower(getStringField(d2, "vendor"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 3: // Model
+				val1 := strings.ToLower(getStringField(d1, "model"))
+				val2 := strings.ToLower(getStringField(d2, "model"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 4: // Location
+				val1 := strings.ToLower(getStringField(d1, "location"))
+				val2 := strings.ToLower(getStringField(d2, "location"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.filtered[i], m.filtered[j] = m.filtered[j], m.filtered[i]
+			}
+		}
+	}
+}
+
 // --- View ---
 
-func (m DevicesModel) View() string {
+func (m *DevicesModel) View() string {
 	if m.inDetail {
 		return m.viewDetail()
 	}
 	return m.viewList()
 }
 
-func (m DevicesModel) viewList() string {
+func (m *DevicesModel) viewList() string {
 	header := TitleStyle.Render("🖥  Devices") +
 		SubtitleStyle.Render(fmt.Sprintf(" (%d)", len(m.filtered)))
 
@@ -425,9 +508,12 @@ func (m DevicesModel) viewList() string {
 			WarningStyle.Render("No devices found."))
 	}
 
+	// Set HeaderY for click detection
+	m.table.HeaderY = 7
+
 	table := m.renderDeviceTable()
 	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
-		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  Enter select  ·  / search",
+		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  click header to sort  ·  Enter select  ·  / search",
 			m.scrollOffset+1, minInt(m.scrollOffset+m.height-8, len(m.filtered)), len(m.filtered)))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, table, "", footer)

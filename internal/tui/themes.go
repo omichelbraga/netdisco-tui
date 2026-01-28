@@ -1,6 +1,12 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 type Theme struct {
 	Name string
@@ -195,4 +201,33 @@ func ListThemes() []string {
 		"Gruvbox",
 		"Monokai",
 	}
+}
+
+// SaveTheme saves the current theme name to config file
+func SaveTheme(themeName string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	
+	configPath := filepath.Join(homeDir, ".netdisco-tui-theme")
+	return os.WriteFile(configPath, []byte(themeName), 0644)
+}
+
+// LoadTheme loads the saved theme from config file
+func LoadTheme() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return // Use default theme
+	}
+	
+	configPath := filepath.Join(homeDir, ".netdisco-tui-theme")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return // Use default theme
+	}
+	
+	themeName := strings.TrimSpace(string(data))
+	CurrentTheme = GetThemeByName(themeName)
+	UpdateStylesForTheme()
 }

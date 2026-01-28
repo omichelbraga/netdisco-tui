@@ -9,14 +9,17 @@ import (
 
 // ResizableTable manages column widths and mouse-based resizing
 type ResizableTable struct {
-	ColumnWidths []int
-	MinWidths    []int
-	resizing     bool
-	resizeCol    int
-	resizeStartX int
-	resizeStartW int
-	hoverCol     int
-	hovering     bool
+	ColumnWidths  []int
+	MinWidths     []int
+	resizing      bool
+	resizeCol     int
+	resizeStartX  int
+	resizeStartW  int
+	hoverCol      int
+	hovering      bool
+	SortColumn    int
+	SortAscending bool
+	HeaderY       int // Y position of header row for click detection
 }
 
 // NewResizableTable creates a new resizable table with default column widths
@@ -31,15 +34,61 @@ func NewResizableTable(defaultWidths []int) ResizableTable {
 	}
 }
 
+// HandleHeaderClick checks if a header was clicked for sorting
+// Returns column index if clicked, -1 if not a header click
+// rowOffset: how many data rows down from HeaderY before we stop considering it a header click
+func (t *ResizableTable) HandleHeaderClick(msg tea.MouseMsg, xOffset int, rowOffset int) int {
+	// Only handle press events, not release (prevents double-click on Windows)
+	if msg.Type != tea.MouseLeft || msg.Action == tea.MouseActionRelease {
+		return -1
+	}
+	
+	// If HeaderY is 0, try to detect header by checking if Y is in the top area (before data rows)
+	// Typically header is within first 10 lines of content
+	minY := t.HeaderY
+	maxY := t.HeaderY + rowOffset
+	
+	// If HeaderY not set, assume header is somewhere in lines 5-10
+	if t.HeaderY == 0 {
+		minY = 5
+		maxY = 10
+	}
+	
+	// Check if Y is on or near the header row
+	if msg.Y < minY || msg.Y > maxY {
+		return -1
+	}
+	
+	// Check which column was clicked
+	adjustedX := msg.X - xOffset
+	x := 0
+	for i := 0; i < len(t.ColumnWidths); i++ {
+		if adjustedX >= x && adjustedX < x+t.ColumnWidths[i] {
+			return i
+		}
+		x += t.ColumnWidths[i] + 1 // +1 for separator
+	}
+	
+	return -1
+}
+
 // HandleMouse processes mouse events for column resizing
 // xOffset: horizontal position where the table starts (usually 0, but may have left padding)
 func (t *ResizableTable) HandleMouse(msg tea.MouseMsg, xOffset int) {
 	// If we're currently resizing, update the column width for any mouse movement
 	if t.resizing {
-		if msg.Type == tea.MouseRelease {
+		// Check for mouse release - button up means we're done
+		if msg.Type == tea.MouseRelease || msg.Type == tea.MouseLeft && msg.Action == tea.MouseActionRelease {
 			t.resizing = false
 			return
 		}
+		
+		// Also stop resizing if no buttons are pressed (failsafe for Windows)
+		if msg.Type == tea.MouseMotion && msg.Button == tea.MouseButtonNone {
+			t.resizing = false
+			return
+		}
+		
 		// Update column width based on current mouse position
 		adjustedX := msg.X - xOffset
 		delta := adjustedX - t.resizeStartX
@@ -57,22 +106,25 @@ func (t *ResizableTable) HandleMouse(msg tea.MouseMsg, xOffset int) {
 	// Not currently resizing - check if starting a resize
 	switch msg.Type {
 	case tea.MouseLeft:
-		// Check if clicking near a column border (the │ separators)
-		adjustedX := msg.X - xOffset
-		x := 0
-		for i := 0; i < len(t.ColumnWidths)-1; i++ {
-			x += t.ColumnWidths[i]
-			// Check if clicking on the separator or within ±2 chars of it
-			// The separator itself is at position x, and is 1 char wide
-			if adjustedX >= x-2 && adjustedX <= x+3 {
-				t.resizing = true
-				t.resizeCol = i
-				t.resizeStartX = adjustedX
-				t.resizeStartW = t.ColumnWidths[i]
-				return
+		// Only start drag if button is being pressed down (not released)
+		if msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionMotion {
+			// Check if clicking near a column border (the │ separators)
+			adjustedX := msg.X - xOffset
+			x := 0
+			for i := 0; i < len(t.ColumnWidths)-1; i++ {
+				x += t.ColumnWidths[i]
+				// Check if clicking on the separator or within ±2 chars of it
+				// The separator itself is at position x, and is 1 char wide
+				if adjustedX >= x-2 && adjustedX <= x+3 {
+					t.resizing = true
+					t.resizeCol = i
+					t.resizeStartX = adjustedX
+					t.resizeStartW = t.ColumnWidths[i]
+					return
+				}
+				// Move past the separator for the next column
+				x += 1
 			}
-			// Move past the separator for the next column
-			x += 1
 		}
 	}
 }
@@ -81,8 +133,18 @@ func (t *ResizableTable) HandleMouse(msg tea.MouseMsg, xOffset int) {
 func (t *ResizableTable) RenderHeader(headers []string) string {
 	var parts []string
 	for i, header := range headers {
+		// Add sort indicator if this is the sorted column
+		displayHeader := header
+		if i == t.SortColumn {
+			if t.SortAscending {
+				displayHeader += " ▲"
+			} else {
+				displayHeader += " ▼"
+			}
+		}
+		
 		width := t.ColumnWidths[i]
-		text := padToWidth(header, width)
+		text := padToWidth(displayHeader, width)
 		col := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(CurrentTheme.Secondary).
