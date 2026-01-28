@@ -2,11 +2,10 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/netdisco-tui/netdisco-tui/internal/api"
 )
@@ -41,18 +40,23 @@ type SubnetsModel struct {
 	searchInput   textinput.Model
 	subnets       []map[string]interface{}
 	cursor        int
+	scrollOffset  int
 	loading       bool
 	err           error
 	searched      bool
 	spinner       spinner.Model
 
 	// IP inventory drill-down
-	inIPInventory   bool
-	selectedSubnet  string
-	ipInventory     []map[string]interface{}
-	ipLoading       bool
-	ipErr           error
-	ipCursor        int
+	inIPInventory  bool
+	selectedSubnet string
+	ipInventory    []map[string]interface{}
+	ipLoading      bool
+	ipErr          error
+	ipCursor       int
+
+	// Resizable tables
+	table   ResizableTable
+	ipTable ResizableTable
 }
 
 func NewSubnetsModel(width, height int, client *api.Client) SubnetsModel {
@@ -72,6 +76,8 @@ func NewSubnetsModel(width, height int, client *api.Client) SubnetsModel {
 		client:      client,
 		searchInput: ti,
 		spinner:     s,
+		table:       NewResizableTable([]int{20, 26, 8, 8, 8, 10}),    // Subnet, Description, Total, Used, Free, Util %
+		ipTable:     NewResizableTable([]int{16, 20, 24, 18, 18, 18}), // IP, MAC, DNS, Vendor, First Seen, Last Seen
 	}
 }
 
@@ -87,6 +93,7 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 		m.err = msg.err
 		m.subnets = msg.subnets
 		m.cursor = 0
+		m.scrollOffset = 0
 		return m, nil
 
 	case ipInventoryMsg:
@@ -94,6 +101,14 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 		m.ipErr = msg.err
 		m.ipInventory = msg.ips
 		m.ipCursor = 0
+		return m, nil
+
+	case tea.MouseMsg:
+		if m.inIPInventory {
+			m.ipTable.HandleMouse(msg, 0)
+		} else {
+			m.table.HandleMouse(msg, 0)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -124,7 +139,7 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 					return m, loadSubnetUtilCmd(m.client, subnet)
 				}
 			} else if len(m.subnets) > 0 && m.cursor < len(m.subnets) {
-				subnet := getStringField(m.subnets[m.cursor], "net")
+				subnet := getStringField(m.subnets[m.cursor], "subnet")
 				if subnet != "" {
 					m.inIPInventory = true
 					m.selectedSubnet = subnet
@@ -141,10 +156,65 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 		case "up":
 			if !m.searchInput.Focused() && m.cursor > 0 {
 				m.cursor--
+				// Adjust scroll to keep cursor visible
+				if m.cursor < m.scrollOffset {
+					m.scrollOffset = m.cursor
+				}
 			}
 		case "down":
 			if !m.searchInput.Focused() && m.cursor < len(m.subnets)-1 {
 				m.cursor++
+				// Adjust scroll to keep cursor visible
+				maxVisible := m.height - 10
+				if maxVisible < 5 {
+					maxVisible = 5
+				}
+				if m.cursor >= m.scrollOffset+maxVisible {
+					m.scrollOffset = m.cursor - maxVisible + 1
+				}
+			}
+		case "pgup", "pageup":
+			if !m.searchInput.Focused() {
+				maxVisible := m.height - 10
+				if maxVisible < 5 {
+					maxVisible = 5
+				}
+				m.cursor -= maxVisible
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
+				m.scrollOffset = m.cursor
+			}
+		case "pgdown", "pagedown":
+			if !m.searchInput.Focused() {
+				maxVisible := m.height - 10
+				if maxVisible < 5 {
+					maxVisible = 5
+				}
+				m.cursor += maxVisible
+				if m.cursor >= len(m.subnets) {
+					m.cursor = len(m.subnets) - 1
+				}
+				if m.cursor >= m.scrollOffset+maxVisible {
+					m.scrollOffset = m.cursor - maxVisible + 1
+				}
+			}
+		case "home":
+			if !m.searchInput.Focused() && len(m.subnets) > 0 {
+				m.cursor = 0
+				m.scrollOffset = 0
+			}
+		case "end":
+			if !m.searchInput.Focused() && len(m.subnets) > 0 {
+				m.cursor = len(m.subnets) - 1
+				maxVisible := m.height - 10
+				if maxVisible < 5 {
+					maxVisible = 5
+				}
+				m.scrollOffset = m.cursor - maxVisible + 1
+				if m.scrollOffset < 0 {
+					m.scrollOffset = 0
+				}
 			}
 		case "r":
 			if m.searched {
@@ -198,69 +268,75 @@ func (m SubnetsModel) View() string {
 	}
 
 	table := m.renderSubnetsTable()
+
+	maxVisible := m.height - 10
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+	visibleEnd := minInt(m.scrollOffset+maxVisible, len(m.subnets))
+
 	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
-		fmt.Sprintf("  %d subnets  ·  Tab to list  ·  ↑↓ navigate  ·  Enter → IP inventory", len(m.subnets)))
+		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  Enter → IP inventory",
+			m.scrollOffset+1, visibleEnd, len(m.subnets)))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, table, "", footer)
 }
 
 func (m SubnetsModel) renderSubnetsTable() string {
-	colSubnet := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(20).Render("Subnet")
-	colDesc := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(26).Render("Description")
-	colTotal := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(8).Render("Total")
-	colUsed := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(8).Render("Used")
-	colFree := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(8).Render("Free")
-	colUtil := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(10).Render("Util %")
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Top, colSubnet, colDesc, colTotal, colUsed, colFree, colUtil)
-
-	sep := lipgloss.NewStyle().Foreground(ColorBorder).Render(
-		strings.Repeat("─", 20) + "┼" + strings.Repeat("─", 26) + "┼" +
-			strings.Repeat("─", 8) + "┼" + strings.Repeat("─", 8) + "┼" +
-			strings.Repeat("─", 8) + "┼" + strings.Repeat("─", 10))
+	headers := []string{"Subnet", "Description", "Total", "Used", "Free", "Util %"}
+	headerRow := m.table.RenderHeader(headers)
+	sep := m.table.RenderSeparator()
 
 	var rows []string
 	rows = append(rows, headerRow, sep)
 
-	for i, s := range m.subnets {
-		subnet := orNA(getStringField(s, "net"))
-		desc := truncate(orNA(getStringField(s, "description")), 24)
-		total := orNA(getStringField(s, "total"))
-		used := orNA(getStringField(s, "used"))
-		free := orNA(getStringField(s, "free"))
+	// Calculate visible range
+	maxVisible := m.height - 10
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+	end := minInt(m.scrollOffset+maxVisible, len(m.subnets))
 
-		// Calculate utilization
-		util := "N/A"
-		totalF := getFloat(s, "total")
-		usedF := getFloat(s, "used")
-		if totalF > 0 {
-			pct := (usedF / totalF) * 100
-			util = fmt.Sprintf("%.1f%%", pct)
-		}
+	for i := m.scrollOffset; i < end; i++ {
+		s := m.subnets[i]
+		// API returns: subnet_size (total), active (used), percent (util %)
+		totalF := getFloat(s, "subnet_size")
+		usedF := getFloat(s, "active")
+		freeF := totalF - usedF
+		pct := getFloat(s, "percent")
 
 		// Color util based on percentage
 		utilColor := ColorSuccess
-		if totalF > 0 {
-			pct := (usedF / totalF) * 100
-			if pct > 75 {
-				utilColor = ColorDanger
-			} else if pct > 50 {
-				utilColor = ColorWarning
-			}
+		if pct > 75 {
+			utilColor = ColorDanger
+		} else if pct > 50 {
+			utilColor = ColorWarning
 		}
 
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(20).Foreground(ColorText).Render(subnet),
-			lipgloss.NewStyle().Width(26).Foreground(ColorTextDim).Render(desc),
-			lipgloss.NewStyle().Width(8).Foreground(ColorTextMuted).Render(total),
-			lipgloss.NewStyle().Width(8).Foreground(ColorTextMuted).Render(used),
-			lipgloss.NewStyle().Width(8).Foreground(ColorTextMuted).Render(free),
-			lipgloss.NewStyle().Width(10).Foreground(utilColor).Render(util))
+		values := []string{
+			orNA(getStringField(s, "subnet")),
+			orNA(getStringField(s, "description")),
+			fmt.Sprintf("%d", int(totalF)),
+			fmt.Sprintf("%d", int(usedF)),
+			fmt.Sprintf("%d", int(freeF)),
+			fmt.Sprintf("%.1f%%", pct),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted, utilColor}
 
+		row := m.table.RenderRow(values, colors)
 		if i == m.cursor {
 			rows = append(rows, ActiveRowStyle.Render(row))
 		} else {
 			rows = append(rows, NormalRowStyle.Render(row))
 		}
+	}
+
+	// Add scroll indicators
+	if m.scrollOffset > 0 {
+		rows = append([]string{lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  ▲ more above")}, rows...)
+	}
+	if end < len(m.subnets) {
+		rows = append(rows, lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  ▼ more below"))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -284,18 +360,9 @@ func (m SubnetsModel) viewIPInventory() string {
 			WarningStyle.Render("No IPs found in this subnet."))
 	}
 
-	colIP := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(16).Render("IP")
-	colMAC := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(20).Render("MAC")
-	colDNS := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(24).Render("DNS")
-	colVendor := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Vendor")
-	colFirst := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("First Seen")
-	colLast := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Last Seen")
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Top, colIP, colMAC, colDNS, colVendor, colFirst, colLast)
-
-	sep := lipgloss.NewStyle().Foreground(ColorBorder).Render(
-		strings.Repeat("─", 16) + "┼" + strings.Repeat("─", 20) + "┼" +
-			strings.Repeat("─", 24) + "┼" + strings.Repeat("─", 18) + "┼" +
-			strings.Repeat("─", 18) + "┼" + strings.Repeat("─", 18))
+	headers := []string{"IP", "MAC", "DNS", "Vendor", "First Seen", "Last Seen"}
+	headerRow := m.ipTable.RenderHeader(headers)
+	sep := m.ipTable.RenderSeparator()
 
 	var rows []string
 	rows = append(rows, headerRow, sep)
@@ -308,14 +375,17 @@ func (m SubnetsModel) viewIPInventory() string {
 
 	for i := 0; i < end; i++ {
 		ip := m.ipInventory[i]
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(16).Foreground(ColorText).Render(orNA(getStringField(ip, "ip"))),
-			lipgloss.NewStyle().Width(20).Foreground(ColorTextDim).Render(truncate(orNA(getStringField(ip, "mac")), 18)),
-			lipgloss.NewStyle().Width(24).Foreground(ColorTextMuted).Render(truncate(orNA(getStringField(ip, "dns")), 22)),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextMuted).Render(truncate(orNA(getStringField(ip, "oui")), 16)),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextMuted).Render(formatTime(getStringField(ip, "time_first"))),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextMuted).Render(formatTime(getStringField(ip, "time_last"))))
+		values := []string{
+			orNA(getStringField(ip, "ip")),
+			orNA(getStringField(ip, "mac")),
+			orNA(getStringField(ip, "dns")),
+			orNA(getStringField(ip, "oui")),
+			formatTime(getStringField(ip, "time_first")),
+			formatTime(getStringField(ip, "time_last")),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted, ColorTextMuted}
 
+		row := m.ipTable.RenderRow(values, colors)
 		if i == m.ipCursor {
 			rows = append(rows, ActiveRowStyle.Render(row))
 		} else {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/netdisco-tui/netdisco-tui/internal/api"
 )
@@ -36,8 +36,11 @@ type NodesModel struct {
 	spinner       spinner.Model
 
 	// Detail
-	inDetail      bool
-	selectedNode  map[string]interface{}
+	inDetail     bool
+	selectedNode map[string]interface{}
+
+	// Resizable table
+	table ResizableTable
 }
 
 func NewNodesModel(width, height int, client *api.Client) NodesModel {
@@ -57,6 +60,7 @@ func NewNodesModel(width, height int, client *api.Client) NodesModel {
 		client:      client,
 		searchInput: ti,
 		spinner:     s,
+		table:       NewResizableTable([]int{18, 15, 25, 18, 16, 16, 5, 19}), // MAC, IP, DNS, Vendor, Switch, Port, VLAN, Last Seen
 	}
 }
 
@@ -73,6 +77,12 @@ func (m NodesModel) Update(msg tea.Msg) (NodesModel, tea.Cmd) {
 		m.results = msg.results
 		m.flatResults = flattenNodeResults(msg.results)
 		m.cursor = 0
+		return m, nil
+
+	case tea.MouseMsg:
+		if !m.inDetail {
+			m.table.HandleMouse(msg, 0)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -140,36 +150,62 @@ func flattenNodeResults(results []map[string]interface{}) []map[string]interface
 	for _, item := range results {
 		row := map[string]interface{}{}
 
-		// Get first IP
-		if ips, ok := item["ips"].([]interface{}); ok && len(ips) > 0 {
-			if ip, ok := ips[0].(map[string]interface{}); ok {
-				row["mac"] = ip["mac"]
-				row["ip"] = ip["ip"]
-				row["dns"] = ip["dns"]
-				row["time_last"] = ip["time_last"]
-				if mfr, ok := ip["manufacturer"].(map[string]interface{}); ok {
-					if company, ok := mfr["company"].(string); ok && company != "" {
-						row["vendor"] = company
-					} else if abbrev, ok := mfr["abbrev"].(string); ok {
-						row["vendor"] = abbrev
+		// Check if this is a full MAC search result (has "sightings", "ips" sections)
+		if sightings, hasSightings := item["sightings"].([]interface{}); hasSightings {
+			// Extract from sightings (port/VLAN location)
+			if len(sightings) > 0 {
+				if s, ok := sightings[0].(map[string]interface{}); ok {
+					row["mac"] = getStringField(s, "mac")
+					row["port"] = getStringField(s, "port")
+					row["vlan"] = getStringField(s, "vlan")
+					row["switch_ip"] = getStringField(s, "switch")
+					row["time_last"] = getStringField(s, "time_last")
+					if dev, ok := s["device"].(map[string]interface{}); ok {
+						row["switch_name"] = shortName(getStringField(dev, "name"))
 					}
 				}
 			}
-		}
 
-		// Get first sighting
-		if sightings, ok := item["sightings"].([]interface{}); ok && len(sightings) > 0 {
-			if s, ok := sightings[0].(map[string]interface{}); ok {
-				if dev, ok := s["device"].(map[string]interface{}); ok {
-					row["switch_name"] = shortName(getStringField(dev, "name"))
-				}
-				row["switch_ip"] = s["switch"]
-				row["port"] = s["port"]
-				row["vlan"] = s["vlan"]
-				if row["time_last"] == nil {
-					row["time_last"] = s["time_last"]
+			// Extract IP/DNS from ips section
+			if ips, ok := item["ips"].([]interface{}); ok && len(ips) > 0 {
+				for _, ipRaw := range ips {
+					if ip, ok := ipRaw.(map[string]interface{}); ok {
+						// Prefer non-IPv6 addresses
+						ipAddr := getStringField(ip, "ip")
+						if ipAddr != "" && !strings.Contains(ipAddr, ":") {
+							row["ip"] = ipAddr
+							row["dns"] = getStringField(ip, "dns")
+							if mfr, ok := ip["manufacturer"].(map[string]interface{}); ok {
+								if company, ok := mfr["company"].(string); ok && company != "" {
+									row["vendor"] = company
+								} else if abbrev, ok := mfr["abbrev"].(string); ok {
+									row["vendor"] = abbrev
+								}
+							}
+							break
+						}
+					}
 				}
 			}
+		} else {
+			// Simple IP search result (no sightings)
+			row["mac"] = getStringField(item, "mac")
+			row["ip"] = getStringField(item, "ip")
+			row["dns"] = getStringField(item, "dns")
+			row["time_last"] = getStringField(item, "time_last")
+
+			if mfr, ok := item["manufacturer"].(map[string]interface{}); ok {
+				if company, ok := mfr["company"].(string); ok && company != "" {
+					row["vendor"] = company
+				} else if abbrev, ok := mfr["abbrev"].(string); ok {
+					row["vendor"] = abbrev
+				}
+			}
+
+			row["switch_name"] = shortName(getStringField(item, "router_name"))
+			row["switch_ip"] = getStringField(item, "router_ip")
+			row["port"] = "N/A"
+			row["vlan"] = "N/A"
 		}
 
 		flat = append(flat, row)
@@ -213,21 +249,9 @@ func (m NodesModel) View() string {
 }
 
 func (m NodesModel) renderNodesTable() string {
-	colMAC := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(20).Render("MAC")
-	colIP := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(16).Render("IP")
-	colDNS := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(22).Render("DNS")
-	colVendor := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(16).Render("Vendor")
-	colSwitch := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Switch")
-	colPort := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(12).Render("Port")
-	colVlan := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(8).Render("VLAN")
-	colSeen := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Last Seen")
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Top, colMAC, colIP, colDNS, colVendor, colSwitch, colPort, colVlan, colSeen)
-
-	sep := lipgloss.NewStyle().Foreground(ColorBorder).Render(
-		strings.Repeat("─", 20) + "┼" + strings.Repeat("─", 16) + "┼" +
-			strings.Repeat("─", 22) + "┼" + strings.Repeat("─", 16) + "┼" +
-			strings.Repeat("─", 18) + "┼" + strings.Repeat("─", 12) + "┼" +
-			strings.Repeat("─", 8) + "┼" + strings.Repeat("─", 18))
+	headers := []string{"MAC", "IP", "DNS", "Vendor", "Switch", "Port", "VLAN", "Last Seen"}
+	headerRow := m.table.RenderHeader(headers)
+	sep := m.table.RenderSeparator()
 
 	var rows []string
 	rows = append(rows, headerRow, sep)
@@ -240,16 +264,19 @@ func (m NodesModel) renderNodesTable() string {
 
 	for i := 0; i < end; i++ {
 		n := m.flatResults[i]
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(20).Foreground(ColorText).Render(truncate(orNA(getStringField(n, "mac")), 18)),
-			lipgloss.NewStyle().Width(16).Foreground(ColorTextDim).Render(truncate(orNA(getStringField(n, "ip")), 14)),
-			lipgloss.NewStyle().Width(22).Foreground(ColorTextMuted).Render(truncate(orNA(getStringField(n, "dns")), 20)),
-			lipgloss.NewStyle().Width(16).Foreground(ColorTextMuted).Render(truncate(orNA(getStringField(n, "vendor")), 14)),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextDim).Render(truncate(orNA(getStringField(n, "switch_name")), 16)),
-			lipgloss.NewStyle().Width(12).Foreground(ColorTextMuted).Render(truncate(orNA(getStringField(n, "port")), 10)),
-			lipgloss.NewStyle().Width(8).Foreground(ColorTextMuted).Render(orNA(getStringField(n, "vlan"))),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextMuted).Render(formatTime(getStringField(n, "time_last"))))
+		values := []string{
+			orNA(getStringField(n, "mac")),
+			orNA(getStringField(n, "ip")),
+			orNA(getStringField(n, "dns")),
+			orNA(getStringField(n, "vendor")),
+			orNA(getStringField(n, "switch_name")),
+			orNA(getStringField(n, "port")),
+			orNA(getStringField(n, "vlan")),
+			formatTime(getStringField(n, "time_last")),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted}
 
+		row := m.table.RenderRow(values, colors)
 		if i == m.cursor {
 			rows = append(rows, ActiveRowStyle.Render(row))
 		} else {
@@ -271,40 +298,75 @@ func (m NodesModel) viewDetail() string {
 	var lines []string
 	lines = append(lines, header, "")
 
-	// IPs section
-	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("  IPs"))
-	lines = append(lines, lipgloss.NewStyle().Foreground(ColorBorder).Render(strings.Repeat("─", 60)))
+	// Extract basic info from IPs section (if present)
+	mac := getStringField(m.selectedNode, "mac")
+	ip := ""
+	dns := ""
+	vendor := "N/A"
+	timeFirst := ""
+	timeLast := ""
 
-	if ips, ok := m.selectedNode["ips"].([]interface{}); ok {
+	if ips, ok := m.selectedNode["ips"].([]interface{}); ok && len(ips) > 0 {
 		for _, ipRaw := range ips {
-			if ip, ok := ipRaw.(map[string]interface{}); ok {
-				lines = append(lines, lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf(
-					"  IP: %-16s  DNS: %-24s  First: %-16s  Last: %s",
-					orNA(getStringField(ip, "ip")),
-					orNA(getStringField(ip, "dns")),
-					formatTime(getStringField(ip, "time_first")),
-					formatTime(getStringField(ip, "time_last")))))
+			if ipData, ok := ipRaw.(map[string]interface{}); ok {
+				ipAddr := getStringField(ipData, "ip")
+				if ipAddr != "" && !strings.Contains(ipAddr, ":") {
+					ip = ipAddr
+					dns = getStringField(ipData, "dns")
+					timeFirst = getStringField(ipData, "time_first")
+					timeLast = getStringField(ipData, "time_last")
+					if mac == "" {
+						mac = getStringField(ipData, "mac")
+					}
+					if mfr, ok := ipData["manufacturer"].(map[string]interface{}); ok {
+						if company, ok := mfr["company"].(string); ok && company != "" {
+							vendor = company
+						} else if abbrev, ok := mfr["abbrev"].(string); ok {
+							vendor = abbrev
+						}
+					}
+					break
+				}
 			}
 		}
-	} else {
-		lines = append(lines, lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  No IPs"))
+	}
+
+	// Basic Info section
+	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("  Node Information"))
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorBorder).Render(strings.Repeat("─", 110)))
+
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf(
+		"  MAC: %-20s  IP: %-16s  DNS: %s",
+		orNA(mac),
+		orNA(ip),
+		orNA(dns))))
+
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf(
+		"  Vendor: %s",
+		vendor)))
+
+	if timeFirst != "" || timeLast != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf(
+			"  First Seen: %-20s  Last Seen: %s",
+			formatTime(timeFirst),
+			formatTime(timeLast))))
 	}
 
 	lines = append(lines, "")
 
-	// Sightings section
+	// Sightings/Connections section
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("  Connections"))
-	lines = append(lines, lipgloss.NewStyle().Foreground(ColorBorder).Render(strings.Repeat("─", 60)))
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorBorder).Render(strings.Repeat("─", 110)))
 
-	if sightings, ok := m.selectedNode["sightings"].([]interface{}); ok {
+	if sightings, ok := m.selectedNode["sightings"].([]interface{}); ok && len(sightings) > 0 {
 		for _, sRaw := range sightings {
 			if s, ok := sRaw.(map[string]interface{}); ok {
-				switchName := ""
+				switchName := "N/A"
 				if dev, ok := s["device"].(map[string]interface{}); ok {
 					switchName = shortName(getStringField(dev, "name"))
 				}
 				lines = append(lines, lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf(
-					"  Switch: %-16s  IP: %-16s  Port: %-12s  VLAN: %-8s  Last: %s",
+					"  Switch: %-20s  IP: %-16s  Port: %-18s  VLAN: %-6s  Last: %s",
 					orNA(switchName),
 					orNA(getStringField(s, "switch")),
 					orNA(getStringField(s, "port")),
@@ -313,7 +375,7 @@ func (m NodesModel) viewDetail() string {
 			}
 		}
 	} else {
-		lines = append(lines, lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  No connections"))
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  No connection information"))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)

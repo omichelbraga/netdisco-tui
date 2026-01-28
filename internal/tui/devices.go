@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/netdisco-tui/netdisco-tui/internal/api"
 )
@@ -111,30 +111,33 @@ type DevicesModel struct {
 	spinner       spinner.Model
 
 	// Detail state
-	inDetail      bool
-	selectedIP    string
-	detailTab     int // 0=Info 1=Ports 2=Neighbors 3=VLANs
-	detailDevice  map[string]interface{}
-	detailLoading bool
-	detailErr     error
-	ports         []map[string]interface{}
-	portsLoading  bool
-	portsErr      error
-	neighbors     map[string]interface{}
+	inDetail         bool
+	selectedIP       string
+	detailTab        int // 0=Info 1=Ports 2=Neighbors 3=VLANs
+	detailDevice     map[string]interface{}
+	detailLoading    bool
+	detailErr        error
+	ports            []map[string]interface{}
+	portsLoading     bool
+	portsErr         error
+	neighbors        map[string]interface{}
 	neighborsLoading bool
-	neighborsErr  error
-	vlans         []map[string]interface{}
-	vlansLoading  bool
-	vlansErr      error
+	neighborsErr     error
+	vlans            []map[string]interface{}
+	vlansLoading     bool
+	vlansErr         error
 
 	// Port nodes
-	portsCursor   int
-	showPortNodes bool
-	portNodesIP   string
-	portNodesPort string
-	portNodes     []map[string]interface{}
+	portsCursor      int
+	showPortNodes    bool
+	portNodesIP      string
+	portNodesPort    string
+	portNodes        []map[string]interface{}
 	portNodesLoading bool
-	portNodesErr  error
+	portNodesErr     error
+
+	// Resizable table
+	table ResizableTable
 }
 
 func NewDevicesModel(width, height int, client *api.Client) DevicesModel {
@@ -148,12 +151,13 @@ func NewDevicesModel(width, height int, client *api.Client) DevicesModel {
 	s.Style = SpinnerStyle
 
 	return DevicesModel{
-		width:   width,
-		height:  height,
-		client:  client,
-		loading: true,
-		spinner: s,
+		width:       width,
+		height:      height,
+		client:      client,
+		loading:     true,
+		spinner:     s,
 		searchInput: ti,
+		table:       NewResizableTable([]int{22, 15, 14, 24, 18}), // Name, IP, Vendor, Model, Location
 	}
 }
 
@@ -203,6 +207,12 @@ func (m DevicesModel) Update(msg tea.Msg) (DevicesModel, tea.Cmd) {
 		m.portNodesLoading = false
 		m.portNodesErr = msg.err
 		m.portNodes = msg.nodes
+		return m, nil
+
+	case tea.MouseMsg:
+		if !m.inDetail {
+			m.table.HandleMouse(msg, 0)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -361,7 +371,7 @@ func (m *DevicesModel) applyFilter() {
 	query := strings.ToLower(m.searchQuery)
 	var filtered []map[string]interface{}
 	for _, dev := range m.devices {
-		name := strings.ToLower(getStringField(dev, "name"))
+		name := strings.ToLower(getStringField(dev, "device_name"))
 		ip := strings.ToLower(getStringField(dev, "ip"))
 		vendor := strings.ToLower(getStringField(dev, "vendor"))
 		model := strings.ToLower(getStringField(dev, "model"))
@@ -429,16 +439,10 @@ func (m DevicesModel) renderDeviceTable() string {
 		maxVisible = 5
 	}
 
-	colName := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(28).Render("Name")
-	colIP := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(16).Render("IP")
-	colVendor := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(14).Render("Vendor")
-	colModel := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Model")
-	colLocation := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(20).Render("Location")
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Top, colName, colIP, colVendor, colModel, colLocation)
-
-	sep := lipgloss.NewStyle().Foreground(ColorBorder).Render(
-		strings.Repeat("─", 28) + "┼" + strings.Repeat("─", 16) + "┼" +
-			strings.Repeat("─", 14) + "┼" + strings.Repeat("─", 18) + "┼" + strings.Repeat("─", 20))
+	// Render header and separator using ResizableTable
+	headers := []string{"Name", "IP", "Vendor", "Model", "Location"}
+	headerRow := m.table.RenderHeader(headers)
+	sep := m.table.RenderSeparator()
 
 	var rows []string
 	rows = append(rows, headerRow, sep)
@@ -446,19 +450,16 @@ func (m DevicesModel) renderDeviceTable() string {
 	end := minInt(m.scrollOffset+maxVisible, len(m.filtered))
 	for i := m.scrollOffset; i < end; i++ {
 		dev := m.filtered[i]
-		name := truncate(orNA(shortName(getStringField(dev, "name"))), 26)
-		ip := truncate(orNA(getStringField(dev, "ip")), 14)
-		vendor := truncate(orNA(getStringField(dev, "vendor")), 12)
-		model := truncate(orNA(getStringField(dev, "model")), 16)
-		location := truncate(orNA(getStringField(dev, "location")), 18)
+		values := []string{
+			orNA(shortName(getStringField(dev, "device_name"))),
+			orNA(getStringField(dev, "ip")),
+			orNA(getStringField(dev, "vendor")),
+			orNA(getStringField(dev, "model")),
+			orNA(getStringField(dev, "location")),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted}
 
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(28).Foreground(ColorText).Render(name),
-			lipgloss.NewStyle().Width(16).Foreground(ColorTextDim).Render(ip),
-			lipgloss.NewStyle().Width(14).Foreground(ColorTextMuted).Render(vendor),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextMuted).Render(model),
-			lipgloss.NewStyle().Width(20).Foreground(ColorTextMuted).Render(location))
-
+		row := m.table.RenderRow(values, colors)
 		if i == m.cursor {
 			rows = append(rows, ActiveRowStyle.Render(row))
 		} else {
@@ -520,13 +521,13 @@ func (m DevicesModel) viewDeviceInfo() string {
 
 	d := m.detailDevice
 	fields := []struct{ key, val string }{
-		{"Name", orNA(shortName(getStringField(d, "name")))},
-		{"FQDN", orNA(getStringField(d, "name"))},
+		{"Name", orNA(shortName(getStringField(d, "device_name")))},
+		{"FQDN", orNA(getStringField(d, "dns"))},
 		{"IP", orNA(getStringField(d, "ip"))},
 		{"Model", orNA(getStringField(d, "model"))},
 		{"Vendor", orNA(getStringField(d, "vendor"))},
 		{"OS", orNA(getStringField(d, "os"))},
-		{"OS Version", orNA(getStringField(d, "os_ver"))},
+		{"OS Version", orNA(getStringField(d, "version"))},
 		{"Location", orNA(getStringField(d, "location"))},
 		{"Contact", orNA(getStringField(d, "contact"))},
 		{"Serial", orNA(getStringField(d, "serial"))},

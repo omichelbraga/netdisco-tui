@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/netdisco-tui/netdisco-tui/internal/api"
 )
@@ -48,6 +48,9 @@ type VlansModel struct {
 	searchInput   textinput.Model
 	searchQuery   string
 	spinner       spinner.Model
+
+	// Resizable table
+	table ResizableTable
 }
 
 func NewVlansModel(width, height int, client *api.Client) VlansModel {
@@ -67,6 +70,7 @@ func NewVlansModel(width, height int, client *api.Client) VlansModel {
 		loading:     true,
 		spinner:     s,
 		searchInput: ti,
+		table:       NewResizableTable([]int{10, 28, 24, 16, 18}), // VLAN, Name, Device, Device IP, Last Updated
 	}
 }
 
@@ -75,24 +79,43 @@ func (m VlansModel) Init() tea.Cmd {
 }
 
 func (m VlansModel) Update(msg tea.Msg) (VlansModel, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	// Always update spinner
+	var spinnerCmd tea.Cmd
+	m.spinner, spinnerCmd = m.spinner.Update(msg)
+	if spinnerCmd != nil {
+		cmds = append(cmds, spinnerCmd)
+	}
+
 	switch msg := msg.(type) {
 	case vlansLoadMsg:
 		m.loading = false
 		m.err = msg.err
 		if msg.err == nil {
 			m.vlans = msg.vlans
+			if m.vlans == nil {
+				m.vlans = []map[string]interface{}{}
+			}
 			m.applyFilter()
 		}
-		return m, nil
+		return m, tea.Batch(cmds...)
 
 	case vlanSearchMsg:
 		m.loading = false
 		m.err = msg.err
 		if msg.err == nil {
 			m.vlans = msg.vlans
+			if m.vlans == nil {
+				m.vlans = []map[string]interface{}{}
+			}
 			m.applyFilter()
 		}
-		return m, nil
+		return m, tea.Batch(cmds...)
+
+	case tea.MouseMsg:
+		m.table.HandleMouse(msg, 0)
+		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
 		if m.searching {
@@ -108,7 +131,8 @@ func (m VlansModel) Update(msg tea.Msg) (VlansModel, tea.Cmd) {
 				if m.searchQuery != "" {
 					m.loading = true
 					m.err = nil
-					return m, searchVlanCmd(m.client, m.searchQuery)
+					cmds = append(cmds, searchVlanCmd(m.client, m.searchQuery))
+					return m, tea.Batch(cmds...)
 				}
 				m.applyFilter()
 			default:
@@ -116,9 +140,12 @@ func (m VlansModel) Update(msg tea.Msg) (VlansModel, tea.Cmd) {
 				m.searchInput, cmd = m.searchInput.Update(msg)
 				m.searchQuery = m.searchInput.Value()
 				m.applyFilter()
-				return m, cmd
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m, tea.Batch(cmds...)
 			}
-			return m, nil
+			return m, tea.Batch(cmds...)
 		}
 
 		switch msg.String() {
@@ -143,33 +170,40 @@ func (m VlansModel) Update(msg tea.Msg) (VlansModel, tea.Cmd) {
 		case "r":
 			m.loading = true
 			m.err = nil
-			return m, loadVlansCmd(m.client)
+			cmds = append(cmds, loadVlansCmd(m.client))
+			return m, tea.Batch(cmds...)
 		}
-
-	default:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
 	}
 
-	return m, nil
+	return m, tea.Batch(cmds...)
 }
 
 func (m *VlansModel) applyFilter() {
+	// Ensure vlans is never nil
+	if m.vlans == nil {
+		m.vlans = []map[string]interface{}{}
+	}
+
 	if m.searchQuery == "" {
 		m.filtered = m.vlans
-		return
-	}
-	query := strings.ToLower(m.searchQuery)
-	var filtered []map[string]interface{}
-	for _, v := range m.vlans {
-		vlan := strings.ToLower(getStringField(v, "vlan"))
-		desc := strings.ToLower(getStringField(v, "description"))
-		if strings.Contains(vlan, query) || strings.Contains(desc, query) {
-			filtered = append(filtered, v)
+	} else {
+		query := strings.ToLower(m.searchQuery)
+		var filtered []map[string]interface{}
+		for _, v := range m.vlans {
+			vlan := strings.ToLower(getStringField(v, "vlan"))
+			desc := strings.ToLower(getStringField(v, "description"))
+			if strings.Contains(vlan, query) || strings.Contains(desc, query) {
+				filtered = append(filtered, v)
+			}
 		}
+		m.filtered = filtered
 	}
-	m.filtered = filtered
+
+	// Ensure filtered is never nil
+	if m.filtered == nil {
+		m.filtered = []map[string]interface{}{}
+	}
+
 	if m.cursor >= len(m.filtered) {
 		m.cursor = 0
 		m.scrollOffset = 0
@@ -177,6 +211,11 @@ func (m *VlansModel) applyFilter() {
 }
 
 func (m VlansModel) View() string {
+	// Ensure filtered is initialized
+	if m.filtered == nil {
+		m.filtered = []map[string]interface{}{}
+	}
+
 	header := TitleStyle.Render("🌐  VLANs") +
 		SubtitleStyle.Render(fmt.Sprintf(" (%d)", len(m.filtered)))
 
@@ -195,33 +234,41 @@ func (m VlansModel) View() string {
 			lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View())+" Loading VLANs...")
 	}
 	if m.err != nil {
+		errMsg := "Unknown error"
+		if m.err != nil {
+			errMsg = m.err.Error()
+		}
 		return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, "",
-			ErrorStyle.Render(fmt.Sprintf("⚠  %s\n\nPress 'r' to retry", m.err.Error())))
+			ErrorStyle.Render(fmt.Sprintf("⚠  %s\n\nPress 'r' to retry", errMsg)))
 	}
 	if len(m.filtered) == 0 {
+		msg := "No VLANs found."
+		if !m.loading && m.err == nil && m.vlans == nil {
+			msg = "Initializing... Press 'r' to load VLANs."
+		}
 		return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, "",
-			WarningStyle.Render("No VLANs found."))
+			WarningStyle.Render(msg))
 	}
 
 	table := m.renderVlansTable()
+	
+	// Ensure we have valid dimensions for footer
+	visibleEnd := minInt(m.scrollOffset+m.height-8, len(m.filtered))
+	if visibleEnd < 1 {
+		visibleEnd = len(m.filtered)
+	}
+	
 	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
 		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate  ·  / search  ·  r refresh",
-			m.scrollOffset+1, minInt(m.scrollOffset+m.height-8, len(m.filtered)), len(m.filtered)))
+			m.scrollOffset+1, visibleEnd, len(m.filtered)))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, table, "", footer)
 }
 
 func (m VlansModel) renderVlansTable() string {
-	colVlan := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(10).Render("VLAN")
-	colName := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(28).Render("Name")
-	colDevice := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(24).Render("Device")
-	colDeviceIP := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(16).Render("Device IP")
-	colUpdated := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Last Updated")
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Top, colVlan, colName, colDevice, colDeviceIP, colUpdated)
-
-	sep := lipgloss.NewStyle().Foreground(ColorBorder).Render(
-		strings.Repeat("─", 10) + "┼" + strings.Repeat("─", 28) + "┼" +
-			strings.Repeat("─", 24) + "┼" + strings.Repeat("─", 16) + "┼" + strings.Repeat("─", 18))
+	headers := []string{"VLAN", "Name", "Device", "Device IP", "Last Updated"}
+	headerRow := m.table.RenderHeader(headers)
+	sep := m.table.RenderSeparator()
 
 	var rows []string
 	rows = append(rows, headerRow, sep)
@@ -234,22 +281,21 @@ func (m VlansModel) renderVlansTable() string {
 
 	for i := m.scrollOffset; i < end; i++ {
 		v := m.filtered[i]
-		vlan := orNA(getStringField(v, "vlan"))
-		name := truncate(orNA(getStringField(v, "description")), 26)
-		device := truncate(orNA(shortName(getNestedString(v, "device", "name"))), 22)
+		device := orNA(shortName(getNestedString(v, "device", "name")))
 		if device == "N/A" {
 			device = orNA(getStringField(v, "ip"))
 		}
-		deviceIP := orNA(getStringField(v, "ip"))
-		updated := formatTime(getStringField(v, "last_discover"))
 
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(10).Foreground(ColorText).Render(vlan),
-			lipgloss.NewStyle().Width(28).Foreground(ColorTextDim).Render(name),
-			lipgloss.NewStyle().Width(24).Foreground(ColorTextMuted).Render(device),
-			lipgloss.NewStyle().Width(16).Foreground(ColorTextMuted).Render(deviceIP),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextMuted).Render(updated))
+		values := []string{
+			orNA(getStringField(v, "vlan")),
+			orNA(getStringField(v, "description")),
+			device,
+			orNA(getStringField(v, "ip")),
+			formatTime(getStringField(v, "last_discover")),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted}
 
+		row := m.table.RenderRow(values, colors)
 		if i == m.cursor {
 			rows = append(rows, ActiveRowStyle.Render(row))
 		} else {

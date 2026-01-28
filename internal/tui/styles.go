@@ -2,71 +2,213 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
+// Legacy color exports for backward compatibility
 var (
-	ColorPrimary   = lipgloss.Color("#00d4ff")
-	ColorSecondary = lipgloss.Color("#7c3aed")
-	ColorSuccess   = lipgloss.Color("#22c55e")
-	ColorDanger    = lipgloss.Color("#ef4444")
-	ColorWarning   = lipgloss.Color("#f59e0b")
-	ColorText      = lipgloss.Color("#e2e8f0")
-	ColorTextDim   = lipgloss.Color("#94a3b8")
-	ColorTextMuted = lipgloss.Color("#64748b")
-	ColorBorder    = lipgloss.Color("#334155")
-	ColorBg        = lipgloss.Color("#0f172a")
-	ColorBgActive  = lipgloss.Color("#1e293b")
+	ColorPrimary   = CurrentTheme.Primary
+	ColorSecondary = CurrentTheme.Secondary
+	ColorSuccess   = CurrentTheme.Success
+	ColorDanger    = CurrentTheme.Danger
+	ColorWarning   = CurrentTheme.Warning
+	ColorText      = CurrentTheme.Text
+	ColorTextDim   = CurrentTheme.TextDim
+	ColorTextMuted = CurrentTheme.TextMuted
+	ColorBorder    = CurrentTheme.Border
+	ColorBg        = CurrentTheme.Background
+	ColorBgActive  = CurrentTheme.BackgroundActive
+)
 
+// UpdateStylesForTheme refreshes all styles when theme changes
+func UpdateStylesForTheme() {
+	ColorPrimary = CurrentTheme.Primary
+	ColorSecondary = CurrentTheme.Secondary
+	ColorSuccess = CurrentTheme.Success
+	ColorDanger = CurrentTheme.Danger
+	ColorWarning = CurrentTheme.Warning
+	ColorText = CurrentTheme.Text
+	ColorTextDim = CurrentTheme.TextDim
+	ColorTextMuted = CurrentTheme.TextMuted
+	ColorBorder = CurrentTheme.Border
+	ColorBg = CurrentTheme.Background
+	ColorBgActive = CurrentTheme.BackgroundActive
+
+	// Refresh all styles
 	TitleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(ColorPrimary)
+		Bold(true).
+		Foreground(CurrentTheme.Primary).
+		Padding(0, 1)
 
 	SubtitleStyle = lipgloss.NewStyle().
-			Foreground(ColorTextMuted)
+		Foreground(CurrentTheme.TextMuted).
+		Italic(true)
+
+	TabActiveStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(CurrentTheme.Primary).
+		Background(CurrentTheme.BackgroundActive).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(CurrentTheme.BorderActive).
+		BorderBottom(true).
+		BorderLeft(true).
+		BorderRight(true).
+		BorderTop(true).
+		Padding(0, 2).
+		MarginRight(1)
+
+	TabInactiveStyle = lipgloss.NewStyle().
+		Foreground(CurrentTheme.TextMuted).
+		Background(CurrentTheme.BackgroundAlt).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(CurrentTheme.BorderMuted).
+		BorderBottom(true).
+		BorderLeft(true).
+		BorderRight(true).
+		BorderTop(true).
+		Padding(0, 2).
+		MarginRight(1)
+
+	SearchStyle = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(CurrentTheme.Primary).
+		Foreground(CurrentTheme.Text).
+		Background(CurrentTheme.BackgroundAlt).
+		Padding(0, 1)
+
+	ErrorStyle = lipgloss.NewStyle().
+		Foreground(CurrentTheme.Danger).
+		Bold(true).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(CurrentTheme.Danger).
+		Padding(1, 2).
+		MarginTop(1)
+
+	WarningStyle = lipgloss.NewStyle().
+		Foreground(CurrentTheme.Warning).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(CurrentTheme.Warning).
+		Padding(1, 2).
+		MarginTop(1)
+
+	SpinnerStyle = lipgloss.NewStyle().
+		Foreground(CurrentTheme.Primary).
+		Bold(true)
+
+	ActiveRowStyle = lipgloss.NewStyle().
+		Background(CurrentTheme.BackgroundActive).
+		Foreground(CurrentTheme.Text).
+		BorderLeft(true).
+		BorderStyle(lipgloss.ThickBorder()).
+		BorderForeground(CurrentTheme.Primary).
+		Padding(0, 1).
+		Bold(true)
+
+	NormalRowStyle = lipgloss.NewStyle().
+		Padding(0, 1)
+
+	DetailKeyStyle = lipgloss.NewStyle().
+		Foreground(CurrentTheme.Secondary).
+		Width(16).
+		Bold(true).
+		Align(lipgloss.Right).
+		MarginRight(1)
+
+	DetailValStyle = lipgloss.NewStyle().
+		Foreground(CurrentTheme.Text)
+
+	StatusUp = lipgloss.NewStyle().
+		Foreground(CurrentTheme.Success).
+		Bold(true).
+		Render("● UP")
+
+	StatusDown = lipgloss.NewStyle().
+		Foreground(CurrentTheme.Danger).
+		Bold(true).
+		Render("● DOWN")
+}
+
+// Initialize styles on package load
+var (
+	TitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(CurrentTheme.Primary).
+			Padding(0, 1)
+
+	SubtitleStyle = lipgloss.NewStyle().
+			Foreground(CurrentTheme.TextMuted).
+			Italic(true)
 
 	TabActiveStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(ColorPrimary).
+			Foreground(CurrentTheme.Primary).
+			Background(CurrentTheme.BackgroundActive).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(CurrentTheme.BorderActive).
 			BorderBottom(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(ColorPrimary).
-			Padding(0, 2)
+			BorderLeft(true).
+			BorderRight(true).
+			BorderTop(true).
+			Padding(0, 2).
+			MarginRight(1)
 
 	TabInactiveStyle = lipgloss.NewStyle().
-			Foreground(ColorTextMuted).
-			Padding(0, 2)
+				Foreground(CurrentTheme.TextMuted).
+				Background(CurrentTheme.BackgroundAlt).
+				BorderStyle(lipgloss.RoundedBorder()).
+				BorderForeground(CurrentTheme.BorderMuted).
+				BorderBottom(true).
+				BorderLeft(true).
+				BorderRight(true).
+				BorderTop(true).
+				Padding(0, 2).
+				MarginRight(1)
 
 	SearchStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(ColorPrimary).
+			BorderForeground(CurrentTheme.Primary).
+			Foreground(CurrentTheme.Text).
+			Background(CurrentTheme.BackgroundAlt).
 			Padding(0, 1)
 
 	ErrorStyle = lipgloss.NewStyle().
-			Foreground(ColorDanger).
-			Bold(true)
+			Foreground(CurrentTheme.Danger).
+			Bold(true).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(CurrentTheme.Danger).
+			Padding(1, 2).
+			MarginTop(1)
 
 	WarningStyle = lipgloss.NewStyle().
-			Foreground(ColorWarning)
+			Foreground(CurrentTheme.Warning).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(CurrentTheme.Warning).
+			Padding(1, 2).
+			MarginTop(1)
 
 	SpinnerStyle = lipgloss.NewStyle().
-			Foreground(ColorPrimary)
+			Foreground(CurrentTheme.Primary).
+			Bold(true)
 
 	ActiveRowStyle = lipgloss.NewStyle().
-			Background(ColorBgActive).
+			Background(CurrentTheme.BackgroundActive).
+			Foreground(CurrentTheme.Text).
 			BorderLeft(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(ColorPrimary).
-			Padding(0, 1)
+			BorderStyle(lipgloss.ThickBorder()).
+			BorderForeground(CurrentTheme.Primary).
+			Padding(0, 1).
+			Bold(true)
 
 	NormalRowStyle = lipgloss.NewStyle().
 			Padding(0, 1)
 
 	DetailKeyStyle = lipgloss.NewStyle().
-			Foreground(ColorSecondary).
-			Width(14).
-			Bold(true)
+			Foreground(CurrentTheme.Secondary).
+			Width(16).
+			Bold(true).
+			Align(lipgloss.Right).
+			MarginRight(1)
 
 	DetailValStyle = lipgloss.NewStyle().
-			Foreground(ColorText)
+			Foreground(CurrentTheme.Text)
 
-	StatusUp   = lipgloss.NewStyle().Foreground(ColorSuccess).Render("● Up")
-	StatusDown = lipgloss.NewStyle().Foreground(ColorDanger).Render("● Down")
+	StatusUp   = lipgloss.NewStyle().Foreground(CurrentTheme.Success).Bold(true).Render("● UP")
+	StatusDown = lipgloss.NewStyle().Foreground(CurrentTheme.Danger).Bold(true).Render("● DOWN")
 )

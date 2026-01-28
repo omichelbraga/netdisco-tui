@@ -2,10 +2,10 @@ package tui
 
 import (
 	"fmt"
-	"strings"
+	"sort"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/netdisco-tui/netdisco-tui/internal/api"
 )
@@ -15,6 +15,16 @@ type recentDevicesMsg struct {
 	err     error
 }
 
+type deviceInventoryMsg struct {
+	devices []map[string]interface{}
+	err     error
+}
+
+type vlanInventoryMsg struct {
+	vlans []map[string]interface{}
+	err   error
+}
+
 func loadRecentDevicesCmd(client *api.Client, days int) tea.Cmd {
 	return func() tea.Msg {
 		devices, err := client.GetRecentDevices(days)
@@ -22,15 +32,45 @@ func loadRecentDevicesCmd(client *api.Client, days int) tea.Cmd {
 	}
 }
 
+func loadDeviceInventoryCmd(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		devices, err := client.GetDeviceInventory()
+		return deviceInventoryMsg{devices: devices, err: err}
+	}
+}
+
+func loadVlanInventoryCmd(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		vlans, err := client.GetVlanInventory()
+		return vlanInventoryMsg{vlans: vlans, err: err}
+	}
+}
+
+const (
+	ReportRecent = iota
+	ReportAllDevices
+	ReportByVendor
+	ReportVLANs
+)
+
 type ReportsModel struct {
 	width, height int
 	client        *api.Client
+	reportType    int
 	devices       []map[string]interface{}
+	vlans         []map[string]interface{}
+	vendorStats   []map[string]interface{}
 	cursor        int
 	loading       bool
 	err           error
 	spinner       spinner.Model
 	days          int
+
+	// Resizable tables (one for each report type)
+	tableRecent     ResizableTable
+	tableAllDevices ResizableTable
+	tableVendor     ResizableTable
+	tableVLANs      ResizableTable
 }
 
 func NewReportsModel(width, height int, client *api.Client) ReportsModel {
@@ -39,17 +79,22 @@ func NewReportsModel(width, height int, client *api.Client) ReportsModel {
 	s.Style = SpinnerStyle
 
 	return ReportsModel{
-		width:   width,
-		height:  height,
-		client:  client,
-		loading: true,
-		spinner: s,
-		days:    7,
+		width:           width,
+		height:          height,
+		client:          client,
+		loading:         true,
+		spinner:         s,
+		days:            7,
+		reportType:      ReportAllDevices,
+		tableRecent:     NewResizableTable([]int{24, 16, 14, 16, 18, 18}), // Name, IP, Vendor, Model, Location, Discovered
+		tableAllDevices: NewResizableTable([]int{22, 15, 14, 24, 18}),     // Name, IP, Vendor, Model, Location
+		tableVendor:     NewResizableTable([]int{30, 10, 12}),             // Vendor, Count, Percentage
+		tableVLANs:      NewResizableTable([]int{8, 24, 40}),              // VLAN, Name, Description
 	}
 }
 
 func (m ReportsModel) Init() tea.Cmd {
-	return loadRecentDevicesCmd(m.client, m.days)
+	return loadDeviceInventoryCmd(m.client)
 }
 
 func (m ReportsModel) Update(msg tea.Msg) (ReportsModel, tea.Cmd) {
@@ -61,23 +106,114 @@ func (m ReportsModel) Update(msg tea.Msg) (ReportsModel, tea.Cmd) {
 		m.cursor = 0
 		return m, nil
 
+	case deviceInventoryMsg:
+		m.loading = false
+		m.err = msg.err
+		m.devices = msg.devices
+		m.cursor = 0
+
+		// Build vendor stats
+		if m.reportType == ReportByVendor {
+			m.vendorStats = m.buildVendorStats()
+		}
+		return m, nil
+
+	case vlanInventoryMsg:
+		m.loading = false
+		m.err = msg.err
+		m.vlans = msg.vlans
+		m.cursor = 0
+		return m, nil
+
+	case tea.MouseMsg:
+		// Handle clicks on report sub-menu tabs
+		// Reports sub-tabs appear in the content area after main tabs
+		// Use Y range 4-10 to catch clicks on the sub-tab bar
+		if msg.Type == tea.MouseLeft && (msg.Y >= 4 && msg.Y <= 10) {
+			// Use fixed position thresholds for reliable detection
+			// Report tabs are left-aligned starting around X=2
+			x := msg.X
+			
+			var newReportType int
+			var shouldSwitch bool
+			
+			// Simple threshold-based detection
+			if x >= 0 && x < 18 {
+				newReportType = ReportRecent
+				shouldSwitch = true
+			} else if x >= 18 && x < 36 {
+				newReportType = ReportAllDevices
+				shouldSwitch = true
+			} else if x >= 36 && x < 54 {
+				newReportType = ReportByVendor
+				shouldSwitch = true
+			} else if x >= 54 && x < 120 {
+				newReportType = ReportVLANs
+				shouldSwitch = true
+			}
+			
+			if shouldSwitch && m.reportType != newReportType {
+				m.reportType = newReportType
+				m.cursor = 0
+				m.loading = true
+				return m, m.loadCurrentReport()
+			}
+			return m, nil
+		}
+
+		// Handle table column resizing if not clicking tabs
+		switch m.reportType {
+		case ReportRecent:
+			m.tableRecent.HandleMouse(msg, 0)
+		case ReportAllDevices:
+			m.tableAllDevices.HandleMouse(msg, 0)
+		case ReportByVendor:
+			m.tableVendor.HandleMouse(msg, 0)
+		case ReportVLANs:
+			m.tableVLANs.HandleMouse(msg, 0)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
+		maxItems := len(m.devices)
+		if m.reportType == ReportByVendor {
+			maxItems = len(m.vendorStats)
+		} else if m.reportType == ReportVLANs {
+			maxItems = len(m.vlans)
+		}
+
 		switch msg.String() {
 		case "up":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down":
-			if m.cursor < len(m.devices)-1 {
+			if m.cursor < maxItems-1 {
 				m.cursor++
 			}
+		case "left":
+			if m.reportType > 0 {
+				m.reportType--
+				m.cursor = 0
+				m.loading = true
+				return m, m.loadCurrentReport()
+			}
+		case "right":
+			if m.reportType < ReportVLANs {
+				m.reportType++
+				m.cursor = 0
+				m.loading = true
+				return m, m.loadCurrentReport()
+			}
 		case "+":
-			m.days += 7
-			m.loading = true
-			m.err = nil
-			return m, loadRecentDevicesCmd(m.client, m.days)
+			if m.reportType == ReportRecent {
+				m.days += 7
+				m.loading = true
+				m.err = nil
+				return m, loadRecentDevicesCmd(m.client, m.days)
+			}
 		case "-":
-			if m.days > 1 {
+			if m.reportType == ReportRecent && m.days > 1 {
 				m.days -= 7
 				if m.days < 1 {
 					m.days = 1
@@ -89,7 +225,7 @@ func (m ReportsModel) Update(msg tea.Msg) (ReportsModel, tea.Cmd) {
 		case "r":
 			m.loading = true
 			m.err = nil
-			return m, loadRecentDevicesCmd(m.client, m.days)
+			return m, m.loadCurrentReport()
 		}
 
 	default:
@@ -101,51 +237,137 @@ func (m ReportsModel) Update(msg tea.Msg) (ReportsModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m ReportsModel) View() string {
-	header := TitleStyle.Render("📋  Recently Added Devices") +
-		SubtitleStyle.Render(fmt.Sprintf(" (last %d days)", m.days))
-
-	controls := lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  +/- change range  ·  r refresh") + "\n"
-
-	if m.loading {
-		return lipgloss.JoinVertical(lipgloss.Left, header, controls,
-			lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View())+" Loading...")
+func (m ReportsModel) loadCurrentReport() tea.Cmd {
+	switch m.reportType {
+	case ReportRecent:
+		return loadRecentDevicesCmd(m.client, m.days)
+	case ReportAllDevices:
+		return loadDeviceInventoryCmd(m.client)
+	case ReportByVendor:
+		return loadDeviceInventoryCmd(m.client)
+	case ReportVLANs:
+		return loadVlanInventoryCmd(m.client)
 	}
-	if m.err != nil {
-		return lipgloss.JoinVertical(lipgloss.Left, header, controls,
-			ErrorStyle.Render(fmt.Sprintf("⚠  %s\n\nPress 'r' to retry", m.err.Error())))
-	}
-	if len(m.devices) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left, header, controls,
-			WarningStyle.Render(fmt.Sprintf("No devices added in the last %d days. Press '+' to expand range.", m.days)))
-	}
-
-	table := m.renderReportsTable()
-	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
-		fmt.Sprintf("  %d devices  ·  ↑↓ navigate", len(m.devices)))
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, controls, table, "", footer)
+	return nil
 }
 
-func (m ReportsModel) renderReportsTable() string {
-	colName := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(24).Render("Name")
-	colIP := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(16).Render("IP")
-	colVendor := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(14).Render("Vendor")
-	colModel := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(16).Render("Model")
-	colOS := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(10).Render("OS")
-	colLocation := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Location")
-	colDiscovered := lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Width(18).Render("Discovered")
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Top, colName, colIP, colVendor, colModel, colOS, colLocation, colDiscovered)
+func (m ReportsModel) buildVendorStats() []map[string]interface{} {
+	vendorMap := make(map[string]int)
+	for _, dev := range m.devices {
+		vendor := getStringField(dev, "vendor")
+		if vendor == "" {
+			vendor = "unknown"
+		}
+		vendorMap[vendor]++
+	}
 
-	sep := lipgloss.NewStyle().Foreground(ColorBorder).Render(
-		strings.Repeat("─", 24) + "┼" + strings.Repeat("─", 16) + "┼" +
-			strings.Repeat("─", 14) + "┼" + strings.Repeat("─", 16) + "┼" +
-			strings.Repeat("─", 10) + "┼" + strings.Repeat("─", 18) + "┼" + strings.Repeat("─", 18))
+	var stats []map[string]interface{}
+	for vendor, count := range vendorMap {
+		stats = append(stats, map[string]interface{}{
+			"vendor": vendor,
+			"count":  count,
+		})
+	}
+
+	// Sort by count descending
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i]["count"].(int) > stats[j]["count"].(int)
+	})
+
+	return stats
+}
+
+func (m ReportsModel) View() string {
+	// Report type tabs with emojis
+	reportData := []struct{ emoji, name string }{
+		{"🕐", "Recent"},
+		{"📋", "All Devices"},
+		{"🏢", "By Vendor"},
+		{"🌐", "VLANs"},
+	}
+	var tabBar []string
+	for i, data := range reportData {
+		label := fmt.Sprintf("%s %s", data.emoji, data.name)
+		if i == m.reportType {
+			tabBar = append(tabBar, TabActiveStyle.Render(label))
+		} else {
+			tabBar = append(tabBar, TabInactiveStyle.Render(label))
+		}
+	}
+	tabs := lipgloss.NewStyle().
+		Padding(1, 2).
+		Render(lipgloss.JoinHorizontal(lipgloss.Top, tabBar...))
+
+	var header, controls, content string
+
+	switch m.reportType {
+	case ReportRecent:
+		header = TitleStyle.Render("📋  Recently Added Devices") +
+			SubtitleStyle.Render(fmt.Sprintf(" (last %d days)", m.days))
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  +/- change range  ·  r refresh  ·  ←→ switch report") + "\n"
+
+		if m.loading {
+			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."
+		} else if m.err != nil {
+			content = ErrorStyle.Render(fmt.Sprintf("⚠  %s\n\nPress 'r' to retry", m.err.Error()))
+		} else if len(m.devices) == 0 {
+			content = WarningStyle.Render(fmt.Sprintf("No devices added in the last %d days. Press '+' to expand range.", m.days))
+		} else {
+			content = m.renderRecentDevicesTable()
+		}
+
+	case ReportAllDevices:
+		header = TitleStyle.Render("📋  All Devices") +
+			SubtitleStyle.Render(fmt.Sprintf(" (%d total)", len(m.devices)))
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  r refresh  ·  ←→ switch report") + "\n"
+
+		if m.loading {
+			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."
+		} else if m.err != nil {
+			content = ErrorStyle.Render(fmt.Sprintf("⚠  %s\n\nPress 'r' to retry", m.err.Error()))
+		} else {
+			content = m.renderAllDevicesTable()
+		}
+
+	case ReportByVendor:
+		header = TitleStyle.Render("📋  Devices by Vendor") +
+			SubtitleStyle.Render(fmt.Sprintf(" (%d vendors)", len(m.vendorStats)))
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  r refresh  ·  ←→ switch report") + "\n"
+
+		if m.loading {
+			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."
+		} else if m.err != nil {
+			content = ErrorStyle.Render(fmt.Sprintf("⚠  %s\n\nPress 'r' to retry", m.err.Error()))
+		} else {
+			content = m.renderVendorStatsTable()
+		}
+
+	case ReportVLANs:
+		header = TitleStyle.Render("📋  VLAN Inventory") +
+			SubtitleStyle.Render(fmt.Sprintf(" (%d VLANs)", len(m.vlans)))
+		controls = lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  r refresh  ·  ←→ switch report") + "\n"
+
+		if m.loading {
+			content = lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.spinner.View()) + " Loading..."
+		} else if m.err != nil {
+			content = ErrorStyle.Render(fmt.Sprintf("⚠  %s\n\nPress 'r' to retry", m.err.Error()))
+		} else {
+			content = m.renderVLANsTable()
+		}
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, tabs, "", header, controls, content)
+}
+
+func (m ReportsModel) renderRecentDevicesTable() string {
+	headers := []string{"Name", "IP", "Vendor", "Model", "Location", "Discovered"}
+	headerRow := m.tableRecent.RenderHeader(headers)
+	sep := m.tableRecent.RenderSeparator()
 
 	var rows []string
 	rows = append(rows, headerRow, sep)
 
-	maxVisible := m.height - 10
+	maxVisible := m.height - 12
 	if maxVisible < 5 {
 		maxVisible = 5
 	}
@@ -153,35 +375,145 @@ func (m ReportsModel) renderReportsTable() string {
 
 	for i := 0; i < end; i++ {
 		d := m.devices[i]
-		name := truncate(orNA(shortName(getStringField(d, "name"))), 22)
-		ip := orNA(getStringField(d, "ip"))
-		vendor := truncate(orNA(getStringField(d, "vendor")), 12)
-		model := truncate(orNA(getStringField(d, "model")), 14)
-		os := truncate(orNA(getStringField(d, "os")), 8)
-		location := truncate(orNA(getStringField(d, "location")), 16)
-		discovered := formatTime(getStringField(d, "creation"))
-		if discovered == "N/A" {
-			discovered = formatTime(getStringField(d, "first_seen"))
+		values := []string{
+			orNA(shortName(getStringField(d, "device_name"))),
+			orNA(getStringField(d, "ip")),
+			orNA(getStringField(d, "vendor")),
+			orNA(getStringField(d, "model")),
+			orNA(getStringField(d, "location")),
+			formatTime(getStringField(d, "creation")),
 		}
-		if discovered == "N/A" {
-			discovered = formatTime(getStringField(d, "last_discover"))
-		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted, ColorSuccess}
 
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(24).Foreground(ColorText).Render(name),
-			lipgloss.NewStyle().Width(16).Foreground(ColorTextDim).Render(ip),
-			lipgloss.NewStyle().Width(14).Foreground(ColorTextMuted).Render(vendor),
-			lipgloss.NewStyle().Width(16).Foreground(ColorTextMuted).Render(model),
-			lipgloss.NewStyle().Width(10).Foreground(ColorTextMuted).Render(os),
-			lipgloss.NewStyle().Width(18).Foreground(ColorTextMuted).Render(location),
-			lipgloss.NewStyle().Width(18).Foreground(ColorSuccess).Render(discovered))
-
+		row := m.tableRecent.RenderRow(values, colors)
 		if i == m.cursor {
 			rows = append(rows, ActiveRowStyle.Render(row))
 		} else {
 			rows = append(rows, NormalRowStyle.Render(row))
 		}
 	}
+
+	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
+		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate", 1, end, len(m.devices)))
+	rows = append(rows, "", footer)
+
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+func (m ReportsModel) renderAllDevicesTable() string {
+	headers := []string{"Name", "IP", "Vendor", "Model", "Location"}
+	headerRow := m.tableAllDevices.RenderHeader(headers)
+	sep := m.tableAllDevices.RenderSeparator()
+
+	var rows []string
+	rows = append(rows, headerRow, sep)
+
+	maxVisible := m.height - 12
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+	end := minInt(maxVisible, len(m.devices))
+
+	for i := 0; i < end; i++ {
+		d := m.devices[i]
+		values := []string{
+			orNA(shortName(getStringField(d, "device_name"))),
+			orNA(getStringField(d, "ip")),
+			orNA(getStringField(d, "vendor")),
+			orNA(getStringField(d, "model")),
+			orNA(getStringField(d, "location")),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted, ColorTextMuted, ColorTextMuted}
+
+		row := m.tableAllDevices.RenderRow(values, colors)
+		if i == m.cursor {
+			rows = append(rows, ActiveRowStyle.Render(row))
+		} else {
+			rows = append(rows, NormalRowStyle.Render(row))
+		}
+	}
+
+	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
+		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate", 1, end, len(m.devices)))
+	rows = append(rows, "", footer)
+
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+func (m ReportsModel) renderVendorStatsTable() string {
+	headers := []string{"Vendor", "Count", "Percentage"}
+	headerRow := m.tableVendor.RenderHeader(headers)
+	sep := m.tableVendor.RenderSeparator()
+
+	var rows []string
+	rows = append(rows, headerRow, sep)
+
+	maxVisible := m.height - 12
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+	end := minInt(maxVisible, len(m.vendorStats))
+
+	totalDevices := len(m.devices)
+
+	for i := 0; i < end; i++ {
+		v := m.vendorStats[i]
+		values := []string{
+			orNA(getStringField(v, "vendor")),
+			fmt.Sprintf("%d", v["count"].(int)),
+			fmt.Sprintf("%.1f%%", float64(v["count"].(int))/float64(totalDevices)*100),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorSuccess}
+
+		row := m.tableVendor.RenderRow(values, colors)
+		if i == m.cursor {
+			rows = append(rows, ActiveRowStyle.Render(row))
+		} else {
+			rows = append(rows, NormalRowStyle.Render(row))
+		}
+	}
+
+	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
+		fmt.Sprintf("  %d vendors  ·  %d total devices  ·  ↑↓ navigate", len(m.vendorStats), totalDevices))
+	rows = append(rows, "", footer)
+
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+func (m ReportsModel) renderVLANsTable() string {
+	headers := []string{"VLAN", "Name", "Description"}
+	headerRow := m.tableVLANs.RenderHeader(headers)
+	sep := m.tableVLANs.RenderSeparator()
+
+	var rows []string
+	rows = append(rows, headerRow, sep)
+
+	maxVisible := m.height - 12
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+	end := minInt(maxVisible, len(m.vlans))
+
+	for i := 0; i < end; i++ {
+		v := m.vlans[i]
+		values := []string{
+			orNA(getStringField(v, "vlan")),
+			orNA(getStringField(v, "name")),
+			orNA(getStringField(v, "description")),
+		}
+		colors := []lipgloss.Color{ColorText, ColorTextDim, ColorTextMuted}
+
+		row := m.tableVLANs.RenderRow(values, colors)
+		if i == m.cursor {
+			rows = append(rows, ActiveRowStyle.Render(row))
+		} else {
+			rows = append(rows, NormalRowStyle.Render(row))
+		}
+	}
+
+	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
+		fmt.Sprintf("  %d-%d of %d  ·  ↑↓ navigate", 1, end, len(m.vlans)))
+	rows = append(rows, "", footer)
 
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }

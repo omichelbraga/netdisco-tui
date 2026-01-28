@@ -93,7 +93,40 @@ func (c *Client) SearchNode(query string) ([]map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.parseArray(body)
+
+	var obj map[string]interface{}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// If "macs" array exists (IP search result), extract MAC and do follow-up search
+	if macs, ok := obj["macs"].([]interface{}); ok && len(macs) > 0 {
+		// Get the MAC from first result
+		if firstMac, ok := macs[0].(map[string]interface{}); ok {
+			if macAddr, ok := firstMac["mac"].(string); ok && macAddr != "" {
+				// Do a second search by MAC to get full details (sightings, etc)
+				body2, err := c.doRequest(fmt.Sprintf("search/node?q=%s&archived=false", macAddr))
+				if err == nil {
+					var obj2 map[string]interface{}
+					if err := json.Unmarshal(body2, &obj2); err == nil {
+						// Return the full MAC search result which has sightings
+						return []map[string]interface{}{obj2}, nil
+					}
+				}
+			}
+		}
+		// Fallback: return IP search result
+		result := make([]map[string]interface{}, 0, len(macs))
+		for _, m := range macs {
+			if mac, ok := m.(map[string]interface{}); ok {
+				result = append(result, mac)
+			}
+		}
+		return result, nil
+	}
+
+	// Direct result (likely MAC search or full node object)
+	return []map[string]interface{}{obj}, nil
 }
 
 // GetDevice gets device details by IP

@@ -8,10 +8,10 @@ import (
 )
 
 type Config struct {
-	BaseURL    string
-	APIKey     string
+	BaseURL     string
+	APIKey      string
 	HTTPTimeout time.Duration
-	MaxRetries int
+	MaxRetries  int
 }
 
 func New() (*Config, error) {

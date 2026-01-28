@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -23,12 +24,13 @@ type RootModel struct {
 	client        *api.Client
 	activeTab     int
 	initialized   []bool
+	showThemeMenu bool
 
-	devices  DevicesModel
-	nodes    NodesModel
-	vlans    VlansModel
-	subnets  SubnetsModel
-	reports  ReportsModel
+	devices DevicesModel
+	nodes   NodesModel
+	vlans   VlansModel
+	subnets SubnetsModel
+	reports ReportsModel
 }
 
 func NewRootModel(width, height int, client *api.Client) RootModel {
@@ -69,28 +71,98 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reports.height = contentHeight
 		return m, nil
 
+	case tea.MouseMsg:
+		// Handle clicks on tab bar
+		// Layout: Row 0 = header bar, Row 1-4 = tab bar (with padding and borders), Row 5+ = content
+		if msg.Type == tea.MouseLeft && (msg.Y >= 1 && msg.Y <= 4) {
+			// Calculate actual tab positions by measuring rendered widths
+			x := msg.X
+			tabEmojis := []string{"📱", "🔍", "🌐", "📊", "📋"}
+			currentX := 2 // Starting X position (accounting for padding)
+			
+			for i, name := range tabNames {
+				label := fmt.Sprintf("%s %s", tabEmojis[i], name)
+				var tabWidth int
+				if i == m.activeTab {
+					tabWidth = lipgloss.Width(TabActiveStyle.Render(label))
+				} else {
+					tabWidth = lipgloss.Width(TabInactiveStyle.Render(label))
+				}
+				
+				// Check if click is within this tab's bounds
+				if x >= currentX && x < currentX+tabWidth {
+					return m.switchTab(i)
+				}
+				
+				currentX += tabWidth
+			}
+		}
+		// If not clicking on tabs, pass to active tab
+
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "1":
-			return m.switchTab(TabDevices)
-		case "2":
-			return m.switchTab(TabNodes)
-		case "3":
-			return m.switchTab(TabVlans)
-		case "4":
-			return m.switchTab(TabSubnets)
-		case "5":
-			return m.switchTab(TabReports)
-		case "q", "ctrl+c":
-			return m, tea.Quit
+		// Check if any input is focused before handling number keys
+		inputFocused := false
+		switch m.activeTab {
+		case TabDevices:
+			inputFocused = m.devices.searchInput.Focused()
+		case TabNodes:
+			inputFocused = m.nodes.searchInput.Focused()
+		case TabSubnets:
+			inputFocused = m.subnets.searchInput.Focused()
 		}
 
-		// Only pass left/right to root if not in a detail view
+		// Only handle tab switching if no input is focused and theme menu is closed
+		if !inputFocused && !m.showThemeMenu {
+			switch msg.String() {
+			case "1":
+				return m.switchTab(TabDevices)
+			case "2":
+				return m.switchTab(TabNodes)
+			case "3":
+				return m.switchTab(TabVlans)
+			case "4":
+				return m.switchTab(TabSubnets)
+			case "5":
+				return m.switchTab(TabReports)
+			}
+		}
+
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "t", "T":
+			// Toggle theme menu
+			m.showThemeMenu = !m.showThemeMenu
+			return m, nil
+		case "esc":
+			// Close theme menu if open
+			if m.showThemeMenu {
+				m.showThemeMenu = false
+				return m, nil
+			}
+		case "1", "2", "3", "4", "5", "6":
+			// Theme selection when menu is open
+			if m.showThemeMenu {
+				themes := []Theme{CyberpunkTheme, NordTheme, DraculaTheme, TokyoNightTheme, GruvboxTheme, MonokaiTheme}
+				idx := int(msg.String()[0] - '1')
+				if idx >= 0 && idx < len(themes) {
+					CurrentTheme = themes[idx]
+					UpdateStylesForTheme()
+					m.showThemeMenu = false
+					return m, nil
+				}
+			}
+		}
+
+		// Only pass left/right to root if not in a detail view or Reports tab
 		if msg.String() == "left" || msg.String() == "right" {
 			passToChild := false
 			switch m.activeTab {
 			case TabDevices:
 				passToChild = m.devices.inDetail
+			case TabReports:
+				// Always pass to Reports so it can handle report type switching
+				passToChild = true
 			}
 			if !passToChild {
 				if msg.String() == "left" && m.activeTab > 0 {
@@ -143,35 +215,173 @@ func (m RootModel) switchTab(tab int) (RootModel, tea.Cmd) {
 }
 
 func (m RootModel) View() string {
+	// Header with app title and theme
+	headerLeft := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(CurrentTheme.Primary).
+		Render("⚡ NETDISCO TUI")
+
+	headerRight := lipgloss.NewStyle().
+		Foreground(CurrentTheme.TextMuted).
+		Render(fmt.Sprintf("Theme: %s [T]", CurrentTheme.Name))
+
+	// Calculate spacer to fill the width
+	leftWidth := lipgloss.Width(headerLeft)
+	rightWidth := lipgloss.Width(headerRight)
+	// Account for 4 chars of padding (2 on each side)
+	availableWidth := m.width - 4
+	spacer := availableWidth - leftWidth - rightWidth
+	if spacer < 1 {
+		spacer = 1
+	}
+
+	header := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		headerLeft,
+		strings.Repeat(" ", spacer),
+		headerRight,
+	)
+
+	headerBar := lipgloss.NewStyle().
+		Background(CurrentTheme.BackgroundAlt).
+		Foreground(CurrentTheme.Text).
+		Padding(0, 2).
+		Render(header)
+
 	// Tab bar
 	var tabs []string
+	tabEmojis := []string{"📱", "🔍", "🌐", "📊", "📋"}
 	for i, name := range tabNames {
-		label := fmt.Sprintf("%d  %s", i+1, name)
+		// Add emoji for visual appeal and easier identification
+		label := fmt.Sprintf("%s %s", tabEmojis[i], name)
 		if i == m.activeTab {
 			tabs = append(tabs, TabActiveStyle.Render(label))
 		} else {
 			tabs = append(tabs, TabInactiveStyle.Render(label))
 		}
 	}
-	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	tabBar := lipgloss.NewStyle().
+		Padding(1, 2).
+		Render(lipgloss.JoinHorizontal(lipgloss.Top, tabs...))
 
 	// Content
 	var content string
-	switch m.activeTab {
-	case TabDevices:
-		content = m.devices.View()
-	case TabNodes:
-		content = m.nodes.View()
-	case TabVlans:
-		content = m.vlans.View()
-	case TabSubnets:
-		content = m.subnets.View()
-	case TabReports:
-		content = m.reports.View()
+	if m.showThemeMenu {
+		content = m.renderThemeMenu()
+	} else {
+		switch m.activeTab {
+		case TabDevices:
+			content = m.devices.View()
+		case TabNodes:
+			content = m.nodes.View()
+		case TabVlans:
+			content = m.vlans.View()
+		case TabSubnets:
+			content = m.subnets.View()
+		case TabReports:
+			content = m.reports.View()
+		}
 	}
 
-	// Footer
-	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render("  q quit  ·  1-5 tabs  ·  ←→ navigate tabs")
+	// Ensure content is not empty
+	if content == "" {
+		content = lipgloss.NewStyle().
+			Foreground(CurrentTheme.TextMuted).
+			Render("Loading...")
+	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, tabBar, "", content, "", footer)
+	// Calculate and enforce height constraints to prevent scrolling
+	// Header bar = 1 row, Tab bar = 3 rows, Footer = 1 row, margins = 2
+	usedHeight := 7
+	maxContentHeight := m.height - usedHeight
+	if maxContentHeight < 10 {
+		maxContentHeight = 10
+	}
+
+	// Truncate content if it exceeds available height
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > maxContentHeight {
+		contentLines = contentLines[:maxContentHeight]
+		content = strings.Join(contentLines, "\n")
+	}
+
+	// Footer with controls
+	footerStyle := lipgloss.NewStyle().
+		Background(CurrentTheme.BackgroundAlt).
+		Foreground(CurrentTheme.TextMuted).
+		Padding(0, 2)
+
+	var footerText string
+	if m.showThemeMenu {
+		footerText = "Press 1-6 to select theme  ·  ESC or T to close"
+	} else {
+		footerText = "q quit  ·  T theme  ·  ←→ tabs  ·  Click on tabs to switch"
+	}
+	footer := footerStyle.Render(footerText)
+
+	return lipgloss.JoinVertical(lipgloss.Left, headerBar, tabBar, content, footer)
+}
+
+func (m RootModel) renderThemeMenu() string {
+	themes := []Theme{CyberpunkTheme, NordTheme, DraculaTheme, TokyoNightTheme, GruvboxTheme, MonokaiTheme}
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(CurrentTheme.Primary).
+		Padding(1, 0).
+		Render("🎨  SELECT THEME")
+
+	var themeItems []string
+	for i, theme := range themes {
+		// Create a preview box with theme colors
+		previewBox := lipgloss.NewStyle().
+			Width(40).
+			Height(3).
+			Background(theme.Background).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(theme.Border).
+			Padding(0, 1).
+			Render(
+				lipgloss.JoinVertical(lipgloss.Left,
+					lipgloss.NewStyle().Foreground(theme.Primary).Render(fmt.Sprintf("■ Primary  ")+
+						lipgloss.NewStyle().Foreground(theme.Secondary).Render("■ Secondary  ")+
+						lipgloss.NewStyle().Foreground(theme.Accent).Render("■ Accent")),
+					lipgloss.NewStyle().Foreground(theme.Success).Render("● Success  ")+
+						lipgloss.NewStyle().Foreground(theme.Warning).Render("● Warning  ")+
+						lipgloss.NewStyle().Foreground(theme.Danger).Render("● Danger"),
+				),
+			)
+
+		label := fmt.Sprintf("[%d] %s", i+1, theme.Name)
+		if theme.Name == CurrentTheme.Name {
+			label += " ✓"
+			label = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Render(label)
+		} else {
+			label = lipgloss.NewStyle().Foreground(CurrentTheme.TextMuted).Render(label)
+		}
+
+		item := lipgloss.JoinVertical(lipgloss.Left, label, previewBox)
+		themeItems = append(themeItems, item)
+	}
+
+	// Arrange in 2 columns
+	col1 := lipgloss.JoinVertical(lipgloss.Left,
+		themeItems[0],
+		lipgloss.NewStyle().MarginTop(1).Render(themeItems[1]),
+		lipgloss.NewStyle().MarginTop(1).Render(themeItems[2]),
+	)
+
+	col2 := lipgloss.JoinVertical(lipgloss.Left,
+		themeItems[3],
+		lipgloss.NewStyle().MarginTop(1).Render(themeItems[4]),
+		lipgloss.NewStyle().MarginTop(1).Render(themeItems[5]),
+	)
+
+	grid := lipgloss.JoinHorizontal(lipgloss.Top, col1, "  ", col2)
+
+	menu := lipgloss.NewStyle().
+		Padding(2).
+		Render(lipgloss.JoinVertical(lipgloss.Left, title, "", grid))
+
+	return menu
 }
