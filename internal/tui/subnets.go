@@ -437,7 +437,7 @@ func (m *SubnetsModel) View() string {
 	}
 
 	// Set HeaderY for click detection
-	m.table.HeaderY = 11
+	m.table.HeaderY = 8
 
 	table := m.renderSubnetsTable()
 
