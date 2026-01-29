@@ -45,7 +45,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/netdisco-tui.git
+git clone https://github.com/omichelbraga/netdisco-tui.git
 cd netdisco-tui
 
 # Build for your platform
@@ -57,7 +57,7 @@ GOOS=windows GOARCH=amd64 go build -o netdisco-tui.exe .
 
 #### Download Binary
 
-Download the latest release from the [Releases](https://github.com/yourusername/netdisco-tui/releases) page.
+Download the latest release from the [Releases](https://github.com/omichelbraga/netdisco-tui/releases) page.
 
 ---
 
