@@ -127,8 +127,8 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 			}
 			m.ipTable.HandleMouse(msg, 0)
 		} else {
-			// Check for subnet table header click
-			if col := m.table.HandleHeaderClick(msg, 0, 2); col >= 0 {
+			// Check for subnet table header click (wider tolerance)
+			if col := m.table.HandleHeaderClick(msg, 0, 4); col >= 0 {
 				if m.table.SortColumn == col {
 					m.table.SortAscending = !m.table.SortAscending
 				} else {
@@ -436,8 +436,8 @@ func (m *SubnetsModel) View() string {
 			WarningStyle.Render("No subnet data found."))
 	}
 
-	// Set HeaderY for click detection
-	m.table.HeaderY = 10
+	// Set HeaderY for click detection (matching green box in screenshot at ~Y=8)
+	m.table.HeaderY = 8
 
 	table := m.renderSubnetsTable()
 
