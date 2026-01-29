@@ -437,7 +437,7 @@ func (m *SubnetsModel) View() string {
 	}
 
 	// Set HeaderY for click detection
-	m.table.HeaderY = 9
+	m.table.HeaderY = 11
 
 	table := m.renderSubnetsTable()
 
@@ -533,7 +533,7 @@ func (m *SubnetsModel) viewIPInventory() string {
 	}
 
 	// Set HeaderY for click detection
-	m.ipTable.HeaderY = 8
+	m.ipTable.HeaderY = 10
 
 	headers := []string{"IP", "MAC", "DNS", "Vendor", "First Seen", "Last Seen"}
 	headerRow := m.ipTable.RenderHeader(headers)
