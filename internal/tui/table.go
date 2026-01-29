@@ -63,10 +63,12 @@ func (t *ResizableTable) HandleHeaderClick(msg tea.MouseMsg, xOffset int, rowOff
 	adjustedX := msg.X - xOffset
 	x := 0
 	for i := 0; i < len(t.ColumnWidths); i++ {
-		if adjustedX >= x && adjustedX < x+t.ColumnWidths[i] {
+		// Check if click is within this column (including the separator after it)
+		colEnd := x + t.ColumnWidths[i]
+		if adjustedX >= x && adjustedX <= colEnd {
 			return i
 		}
-		x += t.ColumnWidths[i] + 1 // +1 for separator
+		x = colEnd + 1 // Move to start of next column (after separator)
 	}
 	
 	return -1

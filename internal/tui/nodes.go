@@ -54,13 +54,17 @@ func NewNodesModel(width, height int, client *api.Client) NodesModel {
 	s.Spinner = spinner.Dot
 	s.Style = SpinnerStyle
 
+	table := NewResizableTable([]int{18, 15, 25, 18, 16, 16, 5, 19}) // MAC, IP, DNS, Vendor, Switch, Port, VLAN, Last Seen
+	table.SortColumn = 0                                              // Default sort by MAC
+	table.SortAscending = true
+
 	return NodesModel{
 		width:       width,
 		height:      height,
 		client:      client,
 		searchInput: ti,
 		spinner:     s,
-		table:       NewResizableTable([]int{18, 15, 25, 18, 16, 16, 5, 19}), // MAC, IP, DNS, Vendor, Switch, Port, VLAN, Last Seen
+		table:       table,
 	}
 }
 
@@ -81,6 +85,18 @@ func (m NodesModel) Update(msg tea.Msg) (NodesModel, tea.Cmd) {
 
 	case tea.MouseMsg:
 		if !m.inDetail {
+			// Check for header click (sorting)
+			if col := m.table.HandleHeaderClick(msg, 0, 6); col >= 0 {
+				if m.table.SortColumn == col {
+					m.table.SortAscending = !m.table.SortAscending
+				} else {
+					m.table.SortColumn = col
+					m.table.SortAscending = true
+				}
+				m.sortNodes()
+				m.cursor = 0
+				return m, nil
+			}
 			m.table.HandleMouse(msg, 0)
 		}
 		return m, nil
@@ -213,6 +229,91 @@ func flattenNodeResults(results []map[string]interface{}) []map[string]interface
 	return flat
 }
 
+func (m *NodesModel) sortNodes() {
+	if len(m.flatResults) == 0 {
+		return
+	}
+
+	for i := 0; i < len(m.flatResults)-1; i++ {
+		for j := i + 1; j < len(m.flatResults); j++ {
+			swap := false
+			n1 := m.flatResults[i]
+			n2 := m.flatResults[j]
+
+			switch m.table.SortColumn {
+			case 0: // MAC
+				val1 := strings.ToLower(getStringField(n1, "mac"))
+				val2 := strings.ToLower(getStringField(n2, "mac"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 1: // IP
+				val1 := strings.ToLower(getStringField(n1, "ip"))
+				val2 := strings.ToLower(getStringField(n2, "ip"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 2: // DNS
+				val1 := strings.ToLower(getStringField(n1, "dns"))
+				val2 := strings.ToLower(getStringField(n2, "dns"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 3: // Vendor
+				val1 := strings.ToLower(getStringField(n1, "vendor"))
+				val2 := strings.ToLower(getStringField(n2, "vendor"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 4: // Switch
+				val1 := strings.ToLower(getStringField(n1, "switch_name"))
+				val2 := strings.ToLower(getStringField(n2, "switch_name"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 5: // Port
+				val1 := strings.ToLower(getStringField(n1, "port"))
+				val2 := strings.ToLower(getStringField(n2, "port"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 6: // VLAN
+				val1 := strings.ToLower(getStringField(n1, "vlan"))
+				val2 := strings.ToLower(getStringField(n2, "vlan"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			case 7: // Last Seen
+				val1 := strings.ToLower(getStringField(n1, "time_last"))
+				val2 := strings.ToLower(getStringField(n2, "time_last"))
+				if m.table.SortAscending {
+					swap = val1 > val2
+				} else {
+					swap = val1 < val2
+				}
+			}
+
+			if swap {
+				m.flatResults[i], m.flatResults[j] = m.flatResults[j], m.flatResults[i]
+			}
+		}
+	}
+}
+
 func (m NodesModel) View() string {
 	if m.inDetail {
 		return m.viewDetail()
@@ -241,9 +342,12 @@ func (m NodesModel) View() string {
 			WarningStyle.Render("No results found."))
 	}
 
+	// Set HeaderY for click detection
+	m.table.HeaderY = 7
+
 	table := m.renderNodesTable()
 	footer := lipgloss.NewStyle().Foreground(ColorTextMuted).Render(
-		fmt.Sprintf("  %d results  ·  Tab to list  ·  ↑↓ navigate  ·  Enter detail", len(m.flatResults)))
+		fmt.Sprintf("  %d results  ·  ↑↓ navigate  ·  click header to sort  ·  Enter detail", len(m.flatResults)))
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, searchBar, table, "", footer)
 }

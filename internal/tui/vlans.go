@@ -119,8 +119,8 @@ func (m VlansModel) Update(msg tea.Msg) (VlansModel, tea.Cmd) {
 
 	case tea.MouseMsg:
 		// Check for header click (sorting)
-		// Allow clicks within 2 rows of HeaderY to count as header clicks
-		if col := m.table.HandleHeaderClick(msg, 0, 2); col >= 0 {
+		// Allow clicks within 6 rows of HeaderY to count as header clicks
+		if col := m.table.HandleHeaderClick(msg, 0, 6); col >= 0 {
 			// Clicked on column header
 			if m.table.SortColumn == col {
 				// Toggle sort direction
@@ -131,6 +131,8 @@ func (m VlansModel) Update(msg tea.Msg) (VlansModel, tea.Cmd) {
 				m.table.SortAscending = true
 			}
 			m.applyFilter()
+			m.cursor = 0
+			m.scrollOffset = 0
 			return m, tea.Batch(cmds...)
 		}
 		

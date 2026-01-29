@@ -113,9 +113,26 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
+		// Calculate HeaderY dynamically based on rendered components
+		// Root UI: 4 lines (header bar + tab bar)
+		// Title: 1 line
+		// Search bar: "\n" + input + "\n" = 3 lines
+		// Table header is right after
+		rootUIHeight := 4
+		titleHeight := 1
+		searchBarHeight := 3
+		m.table.HeaderY = rootUIHeight + titleHeight + searchBarHeight
+		
+		// IP inventory has different layout
+		// Root UI: 4 lines
+		// Title with back info: 1 line
+		// Blank line: 1
+		// Table header
+		m.ipTable.HeaderY = 4 + 1 + 1
+		
 		if m.inIPInventory {
 			// Check for IP table header click
-			if col := m.ipTable.HandleHeaderClick(msg, 0, 2); col >= 0 {
+			if col := m.ipTable.HandleHeaderClick(msg, 0, 3); col >= 0 {
 				if m.ipTable.SortColumn == col {
 					m.ipTable.SortAscending = !m.ipTable.SortAscending
 				} else {
@@ -123,12 +140,13 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 					m.ipTable.SortAscending = true
 				}
 				m.sortIPInventory()
+				m.ipCursor = 0
 				return m, nil
 			}
 			m.ipTable.HandleMouse(msg, 0)
 		} else {
 			// Check for subnet table header click (wider tolerance)
-			if col := m.table.HandleHeaderClick(msg, 0, 4); col >= 0 {
+			if col := m.table.HandleHeaderClick(msg, 0, 6); col >= 0 {
 				if m.table.SortColumn == col {
 					m.table.SortAscending = !m.table.SortAscending
 				} else {
@@ -136,6 +154,8 @@ func (m SubnetsModel) Update(msg tea.Msg) (SubnetsModel, tea.Cmd) {
 					m.table.SortAscending = true
 				}
 				m.sortSubnets()
+				m.cursor = 0
+				m.scrollOffset = 0
 				return m, nil
 			}
 			m.table.HandleMouse(msg, 0)
@@ -299,32 +319,36 @@ func (m *SubnetsModel) sortSubnets() {
 					swap = val1 < val2
 				}
 			case 2: // Total
-				val1, _ := s1["total"].(float64)
-				val2, _ := s2["total"].(float64)
+				val1, _ := s1["subnet_size"].(float64)
+				val2, _ := s2["subnet_size"].(float64)
 				if m.table.SortAscending {
 					swap = val1 > val2
 				} else {
 					swap = val1 < val2
 				}
 			case 3: // Used
-				val1, _ := s1["used"].(float64)
-				val2, _ := s2["used"].(float64)
+				val1, _ := s1["active"].(float64)
+				val2, _ := s2["active"].(float64)
 				if m.table.SortAscending {
 					swap = val1 > val2
 				} else {
 					swap = val1 < val2
 				}
-			case 4: // Free
-				val1, _ := s1["free"].(float64)
-				val2, _ := s2["free"].(float64)
+			case 4: // Free (calculated: subnet_size - active)
+				total1, _ := s1["subnet_size"].(float64)
+				used1, _ := s1["active"].(float64)
+				val1 := total1 - used1
+				total2, _ := s2["subnet_size"].(float64)
+				used2, _ := s2["active"].(float64)
+				val2 := total2 - used2
 				if m.table.SortAscending {
 					swap = val1 > val2
 				} else {
 					swap = val1 < val2
 				}
 			case 5: // Util %
-				val1, _ := s1["utilization"].(float64)
-				val2, _ := s2["utilization"].(float64)
+				val1, _ := s1["percent"].(float64)
+				val2, _ := s2["percent"].(float64)
 				if m.table.SortAscending {
 					swap = val1 > val2
 				} else {
@@ -436,9 +460,6 @@ func (m *SubnetsModel) View() string {
 			WarningStyle.Render("No subnet data found."))
 	}
 
-	// Set HeaderY for click detection (matching green box in screenshot at ~Y=8)
-	m.table.HeaderY = 8
-
 	table := m.renderSubnetsTable()
 
 	maxVisible := m.height - 10
@@ -531,9 +552,6 @@ func (m *SubnetsModel) viewIPInventory() string {
 		return lipgloss.JoinVertical(lipgloss.Left, header, "",
 			WarningStyle.Render("No IPs found in this subnet."))
 	}
-
-	// Set HeaderY for click detection
-	m.ipTable.HeaderY = 10
 
 	headers := []string{"IP", "MAC", "DNS", "Vendor", "First Seen", "Last Seen"}
 	headerRow := m.ipTable.RenderHeader(headers)

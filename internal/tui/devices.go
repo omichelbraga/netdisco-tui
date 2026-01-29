@@ -216,7 +216,7 @@ func (m DevicesModel) Update(msg tea.Msg) (DevicesModel, tea.Cmd) {
 	case tea.MouseMsg:
 		if !m.inDetail {
 			// Check for header click (sorting)
-			if col := m.table.HandleHeaderClick(msg, 0, 2); col >= 0 {
+			if col := m.table.HandleHeaderClick(msg, 0, 6); col >= 0 {
 				// Clicked on column header
 				if m.table.SortColumn == col {
 					// Toggle sort direction
@@ -227,6 +227,8 @@ func (m DevicesModel) Update(msg tea.Msg) (DevicesModel, tea.Cmd) {
 					m.table.SortAscending = true
 				}
 				m.applyFilter()
+				m.cursor = 0
+				m.scrollOffset = 0
 				return m, nil
 			}
 			m.table.HandleMouse(msg, 0)
